@@ -1,0 +1,1 @@
+python3 /home/klipper/scripts/motors_sync.py
