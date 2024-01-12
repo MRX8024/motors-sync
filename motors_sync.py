@@ -10,7 +10,7 @@ def calculate_magnitude(accel_x, accel_y, accel_z):
 def home_printhead():
     try:
         # Run the command to home the printhead
-        subprocess.run(["echo HOME_XY_AND_MOVE_TO_CENTER > ~/printer_data/comms/klippy.serial"], check=True, shell=True)
+        subprocess.run(["echo _HOME_XY_AND_MOVE_TO_CENTER > ~/printer_data/comms/klippy.serial"], check=True, shell=True)
         print("Printhead homed successfully.")
     except subprocess.CalledProcessError as e:
         print(f"Error homing printhead: {e}")
@@ -18,7 +18,7 @@ def home_printhead():
 def activate_and_measure_x():
     try:
         # Run the command to activate and measure X
-        subprocess.run(["echo ACTIVATE_AND_MEASURE_X > ~/printer_data/comms/klippy.serial"], check=True, shell=True)
+        subprocess.run(["echo _ACTIVATE_AND_MEASURE_X > ~/printer_data/comms/klippy.serial"], check=True, shell=True)
         print("ACTIVATE_AND_MEASURE_X command sent successfully.")
     except subprocess.CalledProcessError as e:
         print(f"Error sending ACTIVATE_AND_MEASURE_X command: {e}")
@@ -26,7 +26,7 @@ def activate_and_measure_x():
 def activate_and_measure_y():
     try:
         # Run the command to activate and measure y
-        subprocess.run(["echo ACTIVATE_AND_MEASURE_Y > ~/printer_data/comms/klippy.serial"], check=True, shell=True)
+        subprocess.run(["echo _ACTIVATE_AND_MEASURE_Y > ~/printer_data/comms/klippy.serial"], check=True, shell=True)
         print("ACTIVATE_AND_MEASURE_Y command sent successfully.")
     except subprocess.CalledProcessError as e:
         print(f"Error sending ACTIVATE_AND_MEASURE_Y command: {e}")
@@ -35,7 +35,7 @@ def force_move_xoneplus(steps):
     try:
         # Run the command to force move X
         for _ in range(steps):
-            subprocess.run(["echo FORCE_MOVE_XONEPLUS > ~/printer_data/comms/klippy.serial"], check=True, shell=True)
+            subprocess.run(["echo _FORCE_MOVE_XONEPLUS > ~/printer_data/comms/klippy.serial"], check=True, shell=True)
             print("FORCE_MOVE_XONEPLUS command sent successfully.")
     except subprocess.CalledProcessError as e:
         print(f"Error sending FORCE_MOVE_XONEPLUS command: {e}")
@@ -44,7 +44,7 @@ def force_move_xoneminus(steps):
     try:
         # Run the command to force move X
         for _ in range(steps):
-            subprocess.run(["echo FORCE_MOVE_XONEMINUS > ~/printer_data/comms/klippy.serial"], check=True, shell=True)
+            subprocess.run(["echo _FORCE_MOVE_XONEMINUS > ~/printer_data/comms/klippy.serial"], check=True, shell=True)
             print("FORCE_MOVE_XONEMINUS command sent successfully.")
     except subprocess.CalledProcessError as e:
         print(f"Error sending FORCE_MOVE_XONEMINUS command: {e}")
@@ -53,7 +53,7 @@ def force_move_yoneplus(steps):
     try:
         # Run the command to force move Y
         for _ in range(steps):
-            subprocess.run(["echo FORCE_MOVE_YONEPLUS > ~/printer_data/comms/klippy.serial"], check=True, shell=True)
+            subprocess.run(["echo _FORCE_MOVE_YONEPLUS > ~/printer_data/comms/klippy.serial"], check=True, shell=True)
             print("FORCE_MOVE_YONEPLUS command sent successfully.")
     except subprocess.CalledProcessError as e:
         print(f"Error sending FORCE_MOVE_YONEPLUS command: {e}")
@@ -62,7 +62,7 @@ def force_move_yoneminus(steps):
     try:
         # Run the command to force move Y
         for _ in range(steps):
-            subprocess.run(["echo FORCE_MOVE_YONEMINUS > ~/printer_data/comms/klippy.serial"], check=True, shell=True)
+            subprocess.run(["echo _FORCE_MOVE_YONEMINUS > ~/printer_data/comms/klippy.serial"], check=True, shell=True)
             print("FORCE_MOVE_YONEMINUS command sent successfully.")
     except subprocess.CalledProcessError as e:
         print(f"Error sending FORCE_MOVE_YONEMINUS command: {e}")
