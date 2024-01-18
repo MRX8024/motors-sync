@@ -62,7 +62,7 @@ def process_generated_csv(directory_path='/tmp'):
         subprocess.run([f'echo M118 "Magnitude: {average_max_magnitude}" > ~/printer_data/comms/klippy.serial'], check=True, shell=True)
 
         # Delete the processed CSV file
-        #os.remove(file_path)
+        os.remove(file_path)
 
         return average_max_magnitude
 
