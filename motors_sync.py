@@ -108,7 +108,7 @@ def main():
  
         if initial_direction == "forward":
             while True:
-                steps = max(round(initial_magnitude / 10000), 1)
+                steps = max(int(initial_magnitude / 1500), 1)
                 print("Sending FORCE_MOVE_XONEPLUS command...")
                 force_move_xoneplus(steps)
                 microsteps = microsteps + steps
@@ -127,7 +127,7 @@ def main():
 
         if initial_direction == "backward":
             while True:
-                steps = max(int(initial_magnitude / 10000), 1)
+                steps = max(int(initial_magnitude / 1500), 1)
                 print("Sending FORCE_MOVE_XONEMINUS command...")
                 force_move_xoneminus(steps)
                 microsteps = microsteps - steps
@@ -178,7 +178,7 @@ def main():
  
         if initial_direction == "forward":
             while True:
-                steps = max(round(initial_magnitude / 10000), 1)
+                steps = max(int(initial_magnitude / 1500), 1)
                 print("Sending FORCE_MOVE_YONEPLUS command...")
                 force_move_yoneplus(steps)
                 microsteps = microsteps + steps
@@ -197,7 +197,7 @@ def main():
 
         if initial_direction == "backward":
             while True:
-                steps = max(int(initial_magnitude / 10000), 1)
+                steps = max(int(initial_magnitude / 1500), 1)
                 print("Sending FORCE_MOVE_YONEMINUS command...")
                 force_move_yoneminus(steps)
                 microsteps = microsteps - steps
