@@ -7,7 +7,7 @@ import time
 def calculate_magnitude(accel_x, accel_y, accel_z):
     return np.sqrt(accel_x**2 + accel_y**2 + accel_z**2) # Remove the axis that is perpendicular to the ground.
 
-sync_magnitude_threshold = 1500 #Specify the minimum magnitude value for synchronized motors. The value is used to calculate the number of steps in one iteration.
+sync_magnitude_threshold = 10000 #Specify the minimum magnitude value for synchronized motors. The value is used to calculate the number of steps in one iteration.
 
 def home_printhead():
     subprocess.run(["echo _HOME_XY_AND_MOVE_TO_CENTER > ~/printer_data/comms/klippy.serial"], check=True, shell=True)
