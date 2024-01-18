@@ -54,9 +54,9 @@ def process_generated_csv(directory_path='/tmp'):
         # Calculate magnitude for each row
         data['magnitude'] = calculate_magnitude(data['accel_x'], data['accel_y'], data['accel_z'])
 
-        # Find the 5 maximum magnitudes and calculate their average
-        top_5_max_magnitudes = data.nlargest(4, 'magnitude')['magnitude']
-        average_max_magnitude = top_5_max_magnitudes.mean()
+        # Find the 3 maximum magnitudes and calculate their average
+        top_max_magnitudes = data.nlargest(3, 'magnitude')['magnitude']
+        average_max_magnitude = top_max_magnitudes.mean()
 
         # Print average magnitude value to Klipper console
         subprocess.run([f'echo M118 "Magnitude: {average_max_magnitude}" > ~/printer_data/comms/klippy.serial'], check=True, shell=True)
