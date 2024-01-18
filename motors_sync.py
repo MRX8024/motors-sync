@@ -54,8 +54,8 @@ def process_generated_csv(directory_path='/tmp'):
         # Calculate magnitude for each row
         data['magnitude'] = calculate_magnitude(data['accel_x'], data['accel_y'], data['accel_z'])
 
-        # Find the 3 maximum magnitudes and calculate their average
-        top_max_magnitudes = data.nlargest(3, 'magnitude')['magnitude']
+        # Find the 5 maximum magnitudes and calculate their average
+        top_max_magnitudes = data.nlargest(5, 'magnitude')['magnitude']
         average_max_magnitude = top_max_magnitudes.mean()
 
         # Print average magnitude value to Klipper console
@@ -84,9 +84,9 @@ def main():
     if initial_magnitude is not None:
         print(f"Initial Magnitude: {initial_magnitude}")
 
-        # Send FORCE_MOVE_XONEPLUS command 3 times
+        # Send FORCE_MOVE_XONEPLUS command 3 times 
         print("Sending FORCE_MOVE_XONEPLUS command...")
-        force_move_xoneplus(3)
+        force_move_xoneplus(4)
         microsteps = microsteps + 3    
         # Send ACTIVATE_AND_MEASURE_X command after movement
         print("Sending ACTIVATE_AND_MEASURE_X command after movement...")
@@ -108,7 +108,7 @@ def main():
  
         if initial_direction == "forward":
             while True:
-                steps = max(int(initial_magnitude / 1500), 1)
+                steps = max(int(initial_magnitude / 3000), 1)
                 print("Sending FORCE_MOVE_XONEPLUS command...")
                 force_move_xoneplus(steps)
                 microsteps = microsteps + steps
@@ -127,7 +127,7 @@ def main():
 
         if initial_direction == "backward":
             while True:
-                steps = max(int(initial_magnitude / 1500), 1)
+                steps = max(int(initial_magnitude / 3000), 1)
                 print("Sending FORCE_MOVE_XONEMINUS command...")
                 force_move_xoneminus(steps)
                 microsteps = microsteps - steps
@@ -178,7 +178,7 @@ def main():
  
         if initial_direction == "forward":
             while True:
-                steps = max(int(initial_magnitude / 1500), 1)
+                steps = max(int(initial_magnitude / 3000), 1)
                 print("Sending FORCE_MOVE_YONEPLUS command...")
                 force_move_yoneplus(steps)
                 microsteps = microsteps + steps
@@ -197,7 +197,7 @@ def main():
 
         if initial_direction == "backward":
             while True:
-                steps = max(int(initial_magnitude / 1500), 1)
+                steps = max(int(initial_magnitude / 3000), 1)
                 print("Sending FORCE_MOVE_YONEMINUS command...")
                 force_move_yoneminus(steps)
                 microsteps = microsteps - steps
