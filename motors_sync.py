@@ -7,6 +7,8 @@ import time
 def calculate_magnitude(accel_x, accel_y, accel_z):
     return np.sqrt(accel_x**2 + accel_y**2 + accel_z**2) # Remove the axis that is perpendicular to the ground.
 
+sync_magnitude_threshold = 1500 #Specify the minimum magnitude value for synchronized motors. The value is used to calculate the number of steps in one iteration.
+
 def home_printhead():
     subprocess.run(["echo _HOME_XY_AND_MOVE_TO_CENTER > ~/printer_data/comms/klippy.serial"], check=True, shell=True)
     
@@ -62,7 +64,7 @@ def process_generated_csv(directory_path='/tmp'):
         subprocess.run([f'echo M118 "Magnitude: {average_max_magnitude}" > ~/printer_data/comms/klippy.serial'], check=True, shell=True)
 
         # Delete the processed CSV file
-        os.remove(file_path)
+        #os.remove(file_path)
 
         return average_max_magnitude
 
@@ -84,9 +86,9 @@ def main():
     if initial_magnitude is not None:
         print(f"Initial Magnitude: {initial_magnitude}")
 
-        # Send FORCE_MOVE_XONEPLUS command 3 times 
+        # Send FORCE_MOVE_XONEPLUS command 3 times
         print("Sending FORCE_MOVE_XONEPLUS command...")
-        force_move_xoneplus(4)
+        force_move_xoneplus(3)
         microsteps = microsteps + 3    
         # Send ACTIVATE_AND_MEASURE_X command after movement
         print("Sending ACTIVATE_AND_MEASURE_X command after movement...")
@@ -108,7 +110,7 @@ def main():
  
         if initial_direction == "forward":
             while True:
-                steps = max(int(initial_magnitude / 3000), 1)
+                steps = max(int(initial_magnitude / (sync_magnitude_threshold * 2)), 1)
                 print("Sending FORCE_MOVE_XONEPLUS command...")
                 force_move_xoneplus(steps)
                 microsteps = microsteps + steps
@@ -127,7 +129,7 @@ def main():
 
         if initial_direction == "backward":
             while True:
-                steps = max(int(initial_magnitude / 3000), 1)
+                steps = max(int(initial_magnitude / (sync_magnitude_threshold * 2)), 1)
                 print("Sending FORCE_MOVE_XONEMINUS command...")
                 force_move_xoneminus(steps)
                 microsteps = microsteps - steps
@@ -178,7 +180,7 @@ def main():
  
         if initial_direction == "forward":
             while True:
-                steps = max(int(initial_magnitude / 3000), 1)
+                steps = max(int(initial_magnitude / (sync_magnitude_threshold * 2)), 1)
                 print("Sending FORCE_MOVE_YONEPLUS command...")
                 force_move_yoneplus(steps)
                 microsteps = microsteps + steps
@@ -197,7 +199,7 @@ def main():
 
         if initial_direction == "backward":
             while True:
-                steps = max(int(initial_magnitude / 3000), 1)
+                steps = max(int(initial_magnitude / (sync_magnitude_threshold * 2)), 1)
                 print("Sending FORCE_MOVE_YONEMINUS command...")
                 force_move_yoneminus(steps)
                 microsteps = microsteps - steps
