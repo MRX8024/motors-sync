@@ -60,12 +60,6 @@ def process_generated_csv(directory_path='/tmp', median_filter_window=3, save_fi
         data['filtered_accel_y'] = medfilt(data['accel_y'], kernel_size=median_filter_window)
         data['filtered_accel_z'] = medfilt(data['accel_z'], kernel_size=median_filter_window)
 
-        # Save CSV file with filtered data
-        if save_filtered_csv:
-            filtered_file_name = f"filtered_{file_name}"
-            filtered_file_path = os.path.join(directory_path, filtered_file_name)
-            data.to_csv(filtered_file_path, index=False)
-
         # Calculate magnitude for each row using filtered data
         data['magnitude'] = calculate_magnitude(data['filtered_accel_x'], data['filtered_accel_y'], data['filtered_accel_z'])
 
