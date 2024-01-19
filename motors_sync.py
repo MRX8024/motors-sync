@@ -96,8 +96,8 @@ def main():
 
         # Send FORCE_MOVE_XONEPLUS command 3 times
         print("Sending FORCE_MOVE_XONEPLUS command...")
-        force_move_xoneplus(3)
-        microsteps = microsteps + 3    
+        force_move_xoneplus(1)
+        microsteps = microsteps + 1    
         # Send ACTIVATE_AND_MEASURE_X command after movement
         print("Sending ACTIVATE_AND_MEASURE_X command after movement...")
         activate_and_measure_x()
@@ -166,8 +166,8 @@ def main():
 
         # Send FORCE_MOVE_YONEPLUS command 3 times
         print("Sending FORCE_MOVE_YONEPLUS command...")
-        force_move_yoneplus(3)
-        microsteps = microsteps + 3
+        force_move_yoneplus(1)
+        microsteps = microsteps + 1
         # Send ACTIVATE_AND_MEASURE_Y command after movement
         print("Sending ACTIVATE_AND_MEASURE_Y command after movement...")
         activate_and_measure_y()
