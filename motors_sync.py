@@ -3,11 +3,12 @@ import os
 import pandas as pd
 import numpy as np
 import time
+from scipy.signal import medfilt
 
 def calculate_magnitude(accel_x, accel_y, accel_z):
     return np.sqrt(accel_x**2 + accel_y**2 + accel_z**2) # Remove the axis that is perpendicular to the ground.
 
-sync_magnitude_threshold = 10000 #Specify the minimum magnitude value for synchronized motors. The value is used to calculate the number of steps in one iteration.
+sync_magnitude_threshold = 1500 #Specify the minimum magnitude value for synchronized motors based on your measurements. The value is used to calculate the number of steps in one iteration.
 
 def home_printhead():
     subprocess.run(["echo _HOME_XY_AND_MOVE_TO_CENTER > ~/printer_data/comms/klippy.serial"], check=True, shell=True)
@@ -37,7 +38,8 @@ def force_move_yoneminus(steps):
     for _ in range(steps):
         subprocess.run(["echo _FORCE_MOVE_YONEMINUS > ~/printer_data/comms/klippy.serial"], check=True, shell=True)
     
-def process_generated_csv(directory_path='/tmp'):
+
+def process_generated_csv(directory_path='/tmp', median_filter_window=3):
     try:
         # Get the list of all CSV files in the directory
         csv_files = [f for f in os.listdir(directory_path) if f.endswith('.csv')]
@@ -53,8 +55,13 @@ def process_generated_csv(directory_path='/tmp'):
         # Read CSV file
         data = pd.read_csv(file_path)
 
-        # Calculate magnitude for each row
-        data['magnitude'] = calculate_magnitude(data['accel_x'], data['accel_y'], data['accel_z'])
+        # Apply median filter to accelerometer data
+        data['filtered_accel_x'] = medfilt(data['accel_x'], kernel_size=median_filter_window)
+        data['filtered_accel_y'] = medfilt(data['accel_y'], kernel_size=median_filter_window)
+        data['filtered_accel_z'] = medfilt(data['accel_z'], kernel_size=median_filter_window)
+
+        # Calculate magnitude for each row using filtered data
+        data['magnitude'] = calculate_magnitude(data['filtered_accel_x'], data['filtered_accel_y'], data['filtered_accel_z'])
 
         # Find the 5 maximum magnitudes and calculate their average
         top_max_magnitudes = data.nlargest(5, 'magnitude')['magnitude']
@@ -71,6 +78,7 @@ def process_generated_csv(directory_path='/tmp'):
     except Exception as e:
         print(f"Error processing generated CSV: {str(e)}")
         return None
+
 
 def main():
     print("Homing the printhead...")
@@ -110,7 +118,7 @@ def main():
  
         if initial_direction == "forward":
             while True:
-                steps = max(int(initial_magnitude / (sync_magnitude_threshold * 2)), 1)
+                steps = max(int(initial_magnitude / (sync_magnitude_threshold * 3)), 1)
                 print("Sending FORCE_MOVE_XONEPLUS command...")
                 force_move_xoneplus(steps)
                 microsteps = microsteps + steps
@@ -129,7 +137,7 @@ def main():
 
         if initial_direction == "backward":
             while True:
-                steps = max(int(initial_magnitude / (sync_magnitude_threshold * 2)), 1)
+                steps = max(int(initial_magnitude / (sync_magnitude_threshold * 3)), 1)
                 print("Sending FORCE_MOVE_XONEMINUS command...")
                 force_move_xoneminus(steps)
                 microsteps = microsteps - steps
@@ -180,7 +188,7 @@ def main():
  
         if initial_direction == "forward":
             while True:
-                steps = max(int(initial_magnitude / (sync_magnitude_threshold * 2)), 1)
+                steps = max(int(initial_magnitude / (sync_magnitude_threshold * 3)), 1)
                 print("Sending FORCE_MOVE_YONEPLUS command...")
                 force_move_yoneplus(steps)
                 microsteps = microsteps + steps
@@ -199,7 +207,7 @@ def main():
 
         if initial_direction == "backward":
             while True:
-                steps = max(int(initial_magnitude / (sync_magnitude_threshold * 2)), 1)
+                steps = max(int(initial_magnitude / (sync_magnitude_threshold * 3)), 1)
                 print("Sending FORCE_MOVE_YONEMINUS command...")
                 force_move_yoneminus(steps)
                 microsteps = microsteps - steps
