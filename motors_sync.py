@@ -100,8 +100,6 @@ def main():
     magnitude_before_sync = initial_magnitude
     if initial_magnitude is not None:
         print(f"Initial Magnitude: {initial_magnitude}")
-
-        # Send FORCE_MOVE_XONEPLUS command 3 times
         print("Sending FORCE_MOVE_XONEPLUS command...")
         force_move_xoneplus(1)
         microsteps = microsteps + 1    
@@ -168,8 +166,6 @@ def main():
     magnitude_before_sync = initial_magnitude
     if initial_magnitude is not None:
         print(f"Initial Magnitude: {initial_magnitude}")
-
-        # Send FORCE_MOVE_YONEPLUS command 3 times
         print("Sending FORCE_MOVE_YONEPLUS command...")
         force_move_yoneplus(1)
         microsteps = microsteps + 1
