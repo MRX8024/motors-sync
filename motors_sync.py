@@ -8,8 +8,6 @@ from scipy.signal import medfilt
 def calculate_magnitude(accel_x, accel_y, accel_z):
     return np.sqrt(accel_x**2 + accel_y**2 + accel_z**2) # Remove the axis that is perpendicular to the ground.
 
-sync_magnitude_threshold = 1500 #Specify the minimum magnitude value for synchronized motors based on your measurements. The value is used to calculate the number of steps in one iteration.
-
 def home_printhead():
     subprocess.run(["echo _HOME_XY_AND_MOVE_TO_CENTER > ~/printer_data/comms/klippy.serial"], check=True, shell=True)
     
@@ -39,7 +37,9 @@ def force_move_yoneminus(steps):
         subprocess.run(["echo _FORCE_MOVE_YONEMINUS > ~/printer_data/comms/klippy.serial"], check=True, shell=True)
     
 
-def process_generated_csv(directory_path='/tmp', median_filter_window=3):
+from scipy.signal import medfilt
+
+def process_generated_csv(directory_path='/tmp', median_filter_window=3, save_filtered_csv=True):
     try:
         # Get the list of all CSV files in the directory
         csv_files = [f for f in os.listdir(directory_path) if f.endswith('.csv')]
@@ -60,6 +60,12 @@ def process_generated_csv(directory_path='/tmp', median_filter_window=3):
         data['filtered_accel_y'] = medfilt(data['accel_y'], kernel_size=median_filter_window)
         data['filtered_accel_z'] = medfilt(data['accel_z'], kernel_size=median_filter_window)
 
+        # Save CSV file with filtered data
+        if save_filtered_csv:
+            filtered_file_name = f"filtered_{file_name}"
+            filtered_file_path = os.path.join(directory_path, filtered_file_name)
+            data.to_csv(filtered_file_path, index=False)
+
         # Calculate magnitude for each row using filtered data
         data['magnitude'] = calculate_magnitude(data['filtered_accel_x'], data['filtered_accel_y'], data['filtered_accel_z'])
 
@@ -78,6 +84,7 @@ def process_generated_csv(directory_path='/tmp', median_filter_window=3):
     except Exception as e:
         print(f"Error processing generated CSV: {str(e)}")
         return None
+
 
 
 def main():
@@ -118,16 +125,15 @@ def main():
  
         if initial_direction == "forward":
             while True:
-                steps = max(int(initial_magnitude / (sync_magnitude_threshold * 3)), 1)
                 print("Sending FORCE_MOVE_XONEPLUS command...")
-                force_move_xoneplus(steps)
-                microsteps = microsteps + steps
+                force_move_xoneplus(1)
+                microsteps = microsteps + 1
                 activate_and_measure_x()
                 time.sleep(12)  # Adjust the delay time as needed
                 new_magnitude = process_generated_csv()
 
                 if new_magnitude > initial_magnitude:
-                    force_move_xoneminus(steps)
+                    force_move_xoneminus(1)
                     microsteps = microsteps - 1
                     print("Direction changed. Exiting the loop.")
                     subprocess.run([f'echo M118 "X Motors synchronization completed. Adjusted by {microsteps}/16 steps. Initial magnitude - {magnitude_before_sync}. Final magnitude - {initial_magnitude}" > ~/printer_data/comms/klippy.serial'], check=True, shell=True)
@@ -137,17 +143,16 @@ def main():
 
         if initial_direction == "backward":
             while True:
-                steps = max(int(initial_magnitude / (sync_magnitude_threshold * 3)), 1)
                 print("Sending FORCE_MOVE_XONEMINUS command...")
-                force_move_xoneminus(steps)
-                microsteps = microsteps - steps
+                force_move_xoneminus(1)
+                microsteps = microsteps - 1
                 activate_and_measure_x()
                 time.sleep(12)  # Adjust the delay time as needed
                 new_magnitude = process_generated_csv()
 
                 if new_magnitude > initial_magnitude:
-                    force_move_xoneplus(steps)
-                    microsteps = microsteps + steps
+                    force_move_xoneplus(1)
+                    microsteps = microsteps + 1
                     print("Direction changed. Exiting the loop.")
                     subprocess.run([f'echo M118 "X Motors synchronization completed. Adjusted by {microsteps}/16 steps. Initial magnitude - {magnitude_before_sync}. Final magnitude - {initial_magnitude}" > ~/printer_data/comms/klippy.serial'], check=True, shell=True)
                     break
@@ -188,17 +193,16 @@ def main():
  
         if initial_direction == "forward":
             while True:
-                steps = max(int(initial_magnitude / (sync_magnitude_threshold * 3)), 1)
                 print("Sending FORCE_MOVE_YONEPLUS command...")
-                force_move_yoneplus(steps)
-                microsteps = microsteps + steps
+                force_move_yoneplus(1)
+                microsteps = microsteps + 1
                 activate_and_measure_y()
                 time.sleep(12)  # Adjust the delay time as needed
                 new_magnitude = process_generated_csv()
 
                 if new_magnitude > initial_magnitude:
-                    force_move_yoneminus(steps)
-                    microsteps = microsteps - steps
+                    force_move_yoneminus(1)
+                    microsteps = microsteps - 1
                     print("Direction changed. Exiting the loop.")
                     subprocess.run([f'echo M118 "Y Motors synchronization completed. Adjusted by {microsteps}/16 steps. Initial magnitude - {magnitude_before_sync}. Final magnitude - {initial_magnitude}" > ~/printer_data/comms/klippy.serial'], check=True, shell=True)
                     break
@@ -207,17 +211,16 @@ def main():
 
         if initial_direction == "backward":
             while True:
-                steps = max(int(initial_magnitude / (sync_magnitude_threshold * 3)), 1)
                 print("Sending FORCE_MOVE_YONEMINUS command...")
-                force_move_yoneminus(steps)
-                microsteps = microsteps - steps
+                force_move_yoneminus(1)
+                microsteps = microsteps - 1
                 activate_and_measure_y()
                 time.sleep(12)  # Adjust the delay time as needed
                 new_magnitude = process_generated_csv()
 
                 if new_magnitude > initial_magnitude:
-                    force_move_yoneplus(steps)
-                    microsteps = microsteps + steps
+                    force_move_yoneplus(1)
+                    microsteps = microsteps + 1
                     print("Direction changed. Exiting the loop.")
                     subprocess.run([f'echo M118 "Y Motors synchronization completed. Adjusted by {microsteps}/16 steps. Initial magnitude - {magnitude_before_sync}. Final magnitude - {initial_magnitude}" > ~/printer_data/comms/klippy.serial'], check=True, shell=True)
                     break
