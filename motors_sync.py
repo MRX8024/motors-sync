@@ -39,7 +39,7 @@ def force_move_yoneminus(steps):
 
 from scipy.signal import medfilt
 
-def process_generated_csv(directory_path='/tmp', median_filter_window=3, save_filtered_csv=True):
+def process_generated_csv(directory_path='/tmp', median_filter_window=3, save_filtered_csv=False):
     try:
         # Get the list of all CSV files in the directory
         csv_files = [f for f in os.listdir(directory_path) if f.endswith('.csv')]
