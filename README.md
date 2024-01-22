@@ -1,2 +1,1 @@
-# motors_sync
-Description in the Wiki
+# Description in the Wiki
