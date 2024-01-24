@@ -1,1 +1,1 @@
-# Description in the Wiki
+# Description in the [Wiki](https://github.com/altzbox/motors_sync/wiki)
