@@ -1,3 +1,4 @@
+#!/usr/bin/env python3
 import subprocess
 import os
 import pandas as pd
@@ -10,7 +11,7 @@ time_delay_for_first_measurement = 25 #Time needed to home X and Y and make firs
 time_delay_between_measurements = 12 
 
 def calculate_magnitude(accel_x, accel_y, accel_z):
-    return np.sqrt(accel_x**2 + accel_y**2) # Remove the axis that is perpendicular to the ground.
+    return np.sqrt(accel_x**2 + accel_y**2 + accel_z**2) # Remove the axis that is perpendicular to the ground.
 
 def home_printhead():
     subprocess.run(["echo _HOME_XY_AND_MOVE_TO_CENTER > ~/printer_data/comms/klippy.serial"], check=True, shell=True)
