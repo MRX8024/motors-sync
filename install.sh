@@ -77,4 +77,3 @@ fi
 sudo apt update
 sudo apt-get install libopenblas-dev
 sudo pip install -r "$repo_path/"wiki/requirements.txt
-sudo chmod -R +x "$repo_path/"
