@@ -1,7 +1,6 @@
 #!/bin/bash
-repo=motors_sync
-repo_path=~/motors_sync/
-script_name=motors_sync.py
+repo=motors-sync
+repo_path=~/motors-sync/
 
 # Сворачивание от root
 if [ "$(id -u)" = "0" ]; then
@@ -10,33 +9,37 @@ if [ "$(id -u)" = "0" ]; then
 fi
 
 g_shell_path=~/klipper/klippy/extras/
-g_shell_name=gcode_shell_command.py
-# Перемещение gcode_shell_command.py
-if [ -f "$g_shell_path/$g_shell_name" ]; then # Проверка файла в папке
-     echo "Including $g_shell_name aborted, $g_shell_name already exists in $g_shell_path"
-else
-    sudo cp "$repo_path/$g_shell_name" $g_shell_path # Копирование
-    echo "Copying $g_shell_name to $g_shell_path successfully complete"
-    sudo chmod +x "$g_shell_path/$g_shell_name"
-fi
 
-cfg_name=motors_sync.cfg
-cfg_path=~/printer_data/config/
+module_name=motors_sync.py
+module_path=~/klipper/klippy/extras/
 cfg_incl_path=~/printer_data/config/printer.cfg
 
-ln -sf "$repo_path/$cfg_name" $cfg_path # Перезапись
+ln -sf "$repo_path/$module_name" $module_path # Перезапись
 
-# Добавление строки [include] в printer.cfg
+## Добавление строки [include] в printer.cfg
+#if [ -f "$cfg_incl_path" ]; then
+#    if ! grep -q "^\[include $cfg_name\]$" "$cfg_incl_path"; then
+#        sudo service klipper stop
+#        sed -i "1i\[include $cfg_name]" "$cfg_incl_path"
+#        # echo "Including $cfg_name to $cfg_incl_path successfully complete"
+#        sudo service klipper start
+#    else
+#        echo "Including $cfg_name aborted, $cfg_name already exists in $cfg_incl_path"
+#    fi
+#fi
+
+# Добавление строки [force_move] в printer.cfg
 if [ -f "$cfg_incl_path" ]; then
-    if ! grep -q "^\[include $cfg_name\]$" "$cfg_incl_path"; then
+    if ! grep -q "^\[force_move\]$" "$cfg_incl_path"; then
         sudo service klipper stop
-        sed -i "1i\[include $cfg_name]" "$cfg_incl_path"
-        # echo "Including $cfg_name to $cfg_incl_path successfully complete"
+        sed -i "1i\[force_move\]" "$cfg_incl_path"
+        sed -i "\$a enable_force_move: True" "$blk_path"
         sudo service klipper start
     else
-        echo "Including $cfg_name aborted, $cfg_name already exists in $cfg_incl_path"
+        echo "Including [force_move] aborted, [force_move] already exists in $cfg_incl_path"
     fi
 fi
+
 # Добавление строки [respond] в printer.cfg
 if [ -f "$cfg_incl_path" ]; then
     if ! grep -q "^\[respond\]$" "$cfg_incl_path"; then
@@ -75,5 +78,5 @@ if [ -f "$blk_path" ]; then
 fi
 
 sudo apt update
-sudo apt-get install libopenblas-dev
-sudo pip install -r "$repo_path/"wiki/requirements.txt
+sudo apt install python3-numpy python3-matplotlib libatlas-base-dev libopenblas-dev
+sudo ~/klippy-env/bin/pip install -rv "$repo_path/"wiki/requirements.txt
