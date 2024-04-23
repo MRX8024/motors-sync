@@ -9,6 +9,14 @@ if [ "$(id -u)" = "0" ]; then
 fi
 
 g_shell_path=~/klipper/klippy/extras/
+g_shell_name=gcode_shell_command.py
+# Перемещение gcode_shell_command.py
+if [ -f "$g_shell_path/$g_shell_name" ]; then # Проверка файла в папке
+     echo "Including $g_shell_name aborted, $g_shell_name already exists in $g_shell_path"
+else
+    sudo cp "$repo_path/$g_shell_name" $g_shell_path # Копирование
+    # echo "Copying $g_shell_name to $g_shell_path successfully complete"
+fi
 
 module_name=motors_sync.py
 module_path=~/klipper/klippy/extras/
@@ -32,8 +40,9 @@ ln -sf "$repo_path/$module_name" $module_path # Перезапись
 if [ -f "$cfg_incl_path" ]; then
     if ! grep -q "^\[force_move\]$" "$cfg_incl_path"; then
         sudo service klipper stop
+        sed -i "1i\enable_force_move: True" "$cfg_incl_path"
         sed -i "1i\[force_move\]" "$cfg_incl_path"
-        sed -i "\$a enable_force_move: True" "$blk_path"
+
         sudo service klipper start
     else
         echo "Including [force_move] aborted, [force_move] already exists in $cfg_incl_path"
@@ -79,4 +88,4 @@ fi
 
 sudo apt update
 sudo apt install python3-numpy python3-matplotlib libatlas-base-dev libopenblas-dev
-sudo ~/klippy-env/bin/pip install -rv "$repo_path/"wiki/requirements.txt
+sudo ~/klippy-env/bin/pip install -r "$repo_path/"wiki/requirements.txt
