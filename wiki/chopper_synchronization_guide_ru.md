@@ -4,7 +4,7 @@
 ```
     cd ~
     git clone https://github.com/MRX8024/motors-sync
-    bash ~/motors_sync/install.sh
+    bash ~/motors-sync/install.sh
 ```
 
 2. Подключаем акселерометр как при измерении резонансов для input_shaper.
