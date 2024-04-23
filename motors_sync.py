@@ -47,18 +47,20 @@ class MotorsSync:
         self.force_move.manual_move(stepper, dist, 100, 5000)
 
     def _parse_axis(self, gcmd):
-        raw_axis = gcmd.get('AXIS')
-        if raw_axis is None:
-            return ['x', 'y']
-        raw_axis = raw_axis.lower()
-        if raw_axis == 'xy':
-            return ['x', 'y']
-        if raw_axis in ['x', 'y']:
-            return raw_axis
-        split = raw_axis.split(',')
-        if len(split) != 2:
-            raise gcmd.error("Invalid format of axis '%s'" % (raw_axis,))
-        return split
+        try:
+            raw_axis = gcmd.get('AXIS')
+            if raw_axis is None:
+                return ['x', 'y']
+            raw_axis = raw_axis.lower()
+            if raw_axis == 'xy':
+                return ['x', 'y']
+            if raw_axis in ['x', 'y']:
+                return raw_axis
+            split = raw_axis.split(',')
+            if len(split) != 2:
+                raise gcmd.error(f'Invalid format of axis {raw_axis}')
+            return split
+        except: return ['x', 'y']
 
     def _find_z_axis(self, file_path):
         global z_axis
