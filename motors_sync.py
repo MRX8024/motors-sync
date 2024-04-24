@@ -197,7 +197,7 @@ class MotorsSync:
                     if self.new_magnitude > self.magnitude:
                         self._stepper_move(self.lookup_stepper, self.moving_microsteps * self.move_len * self.move_dir[0] * -1)
                         self.actual_microsteps -= self.moving_microsteps
-                        if self.force_threshold != 0 and self.new_magnitude > self.force_threshold:
+                        if self.force_threshold != 0 and self.magnitude > self.force_threshold:
                             if retries > self.max_retries:
                                 raise self.gcode.error('Too many retries')
                             if self.respond: self.gcode.respond_info(
