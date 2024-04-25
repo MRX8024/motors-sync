@@ -8,6 +8,7 @@ DELAY = 1.00                # Delay between checks csv in tmp in sec
 OPEN_DELAY = 0.25           # Delay between open csv in sec
 TIMER = 20.00               # Exit program time in sec
 MEDIAN_FILTER_WINDOW = 3
+static_data = ''
 z_axis = ''
 
 
@@ -22,7 +23,7 @@ class MotorsSync:
         # Read config
         self.accel_chip = self.config.get('accel_chip', (self.config.getsection('resonance_tester').get('accel_chip')))
         self.microsteps = self.config.getint('microsteps', default=16, minval=2, maxval=16)
-        self.steps_threshold = self.config.getint('steps_threshold', default=100000, minval=5000, maxval=100000)
+        self.steps_threshold = self.config.getint('steps_threshold', default=1000000, minval=5000, maxval=100000)
         self.fast_threshold = self.config.getint('fast_threshold', default=0, minval=0, maxval=100000)
         self.force_threshold = self.config.getint('force_threshold', default=0, minval=0, maxval=100000)
         self.max_retries = self.config.getint('threshold_retries', default=0, minval=0, maxval=10)
@@ -62,8 +63,8 @@ class MotorsSync:
             return split
         except: return ['x', 'y']
 
-    def _find_z_axis(self, file_path):
-        global z_axis
+    def _static_measure(self, file_path):
+        global z_axis, static_data
         self._send(f'ACCELEROMETER_MEASURE CHIP={self.accel_chip} NAME=stand_still')
         time.sleep(0.25)
         self._send(f'ACCELEROMETER_MEASURE CHIP={self.accel_chip} NAME=stand_still')
@@ -71,9 +72,10 @@ class MotorsSync:
         for f in os.listdir(file_path):
             if f.endswith('stand_still.csv'):
                 with open(os.path.join(file_path, f), 'r') as file:
-                    data = np.genfromtxt(file, delimiter=',', skip_header=1)
-                    z_axis = np.abs(data[1:, 1:]).mean(axis=0).argmax() + 1
-                    # self.gcode.respond_info(f'Z on "{z_axis}" colum')
+                    vect = np.mean(np.genfromtxt(file, delimiter=',', skip_header=1, usecols=(1, 2, 3)), axis=0)
+                    z_axis = np.abs(vect[0:]).argmax()
+                    xy_vect = np.delete(vect, z_axis, axis=0)
+                    static_data = round(np.linalg.norm(xy_vect, axis=0), 2)
                     os.remove(os.path.join(file_path, f))
 
     def _wait_csv(self):
@@ -86,7 +88,6 @@ class MotorsSync:
                     time.sleep(OPEN_DELAY)
                     return
                 elif timer > TIMER / DELAY:
-                    print('No CSV files found in the directory, aborting')
                     raise self.gcode.error(f'No CSV files found in the directory, aborting')
                 else: continue
 
@@ -108,17 +109,17 @@ class MotorsSync:
                 self.gcode.error("More than one CSV file found! Aborting")
             file_name = csv_files[0]
             file_path = os.path.join(DATA_FOLDER, file_name)
-            data = np.genfromtxt(file_path, delimiter=',', skip_header=1)
+            vect = np.genfromtxt(file_path, delimiter=',', skip_header=1, usecols=range(1,4))
+            xy_vect = np.delete(vect, z_axis, axis=1)
             os.remove(file_path)
-            accel_x_filtered = np.convolve(data[1:, 1], np.ones(MEDIAN_FILTER_WINDOW) / MEDIAN_FILTER_WINDOW, mode='same')
-            accel_y_filtered = np.convolve(data[1:, 2], np.ones(MEDIAN_FILTER_WINDOW) / MEDIAN_FILTER_WINDOW, mode='same')
-            accel_z_filtered = np.convolve(data[1:, 3], np.ones(MEDIAN_FILTER_WINDOW) / MEDIAN_FILTER_WINDOW, mode='same')
-            magnitudes = np.linalg.norm(np.vstack((
-                np.where(z_axis != 1, accel_x_filtered, np.zeros_like(0)),
-                np.where(z_axis != 2, accel_y_filtered, np.zeros_like(0)),
-                np.where(z_axis != 3, accel_z_filtered, np.zeros_like(0)))), axis=0)
+            # Add window mean filter
+            magnitude = []
+            for i in range(int(MEDIAN_FILTER_WINDOW / 2), len(xy_vect) - int(MEDIAN_FILTER_WINDOW / 2)):
+                filtered_xy_vect = (np.median([xy_vect[i-1], xy_vect[i], xy_vect[i+1]], axis=0))
+                magnitude.append(np.linalg.norm(filtered_xy_vect))
             # Return average of 5 maximum magnitudes
-            return round(np.mean(np.sort(magnitudes)[-5:]), 2)
+            magnitude = np.mean(np.sort(magnitude)[-5:])
+            return round(magnitude - static_data, 2)
         except Exception as e:
             self.gcode.error(f"Error processing generated CSV: {str(e)}")
 
@@ -153,7 +154,7 @@ class MotorsSync:
         self.force_threshold = gcmd.get_int('FORCE_THRESHOLD', self.force_threshold, minval=0, maxval=100000)
         self.max_retries = gcmd.get_int('THRESHOLD_RETRIES', self.max_retries, minval=0, maxval=10)
         self.prestart()
-        self._find_z_axis(DATA_FOLDER)
+        self._static_measure(DATA_FOLDER)
         total_info = []
         for axis in self.axes:
             axis = axis.lower()
@@ -162,57 +163,57 @@ class MotorsSync:
             if self.respond: self.gcode.respond_info(f'{axis.upper()} Motors synchronization...')
 
             # First measurement
-            self.magnitude = self._measure(axis, True)
-            self.actual_microsteps = 0
-            self.magnitude_before_sync = self.magnitude
-            if self.respond: self.gcode.respond_info(f'Initial magnitude: {self.magnitude}')
+            magnitude = self._measure(axis, True)
+            actual_microsteps = 0
+            magnitude_before_sync = magnitude
+            if self.respond: self.gcode.respond_info(f'Initial magnitude: {magnitude}')
             running = True
             retries = 0
             while running:
-                self.moving_microsteps = max(int(self.magnitude / (self.steps_threshold)), 1)
-                self._stepper_move(self.lookup_stepper, self.moving_microsteps * self.move_len)
-                self.actual_microsteps += self.moving_microsteps
-                self.new_magnitude = self._measure(axis, True)
+                moving_microsteps = max(int(magnitude / (self.steps_threshold)), 1)
+                self._stepper_move(self.lookup_stepper, moving_microsteps * self.move_len)
+                actual_microsteps += moving_microsteps
+                new_magnitude = self._measure(axis, True)
                 if self.respond: self.gcode.respond_info(
-                    f'New magnitude: {self.new_magnitude} '
-                    f'on {self.moving_microsteps}/{self.microsteps} step move')
+                    f'New magnitude: {new_magnitude} '
+                    f'on {moving_microsteps}/{self.microsteps} step move')
 
                 # Determine movement direction
-                if self.new_magnitude > self.magnitude:
-                    self.move_dir = [-1, 'Backward']
+                if new_magnitude > magnitude:
+                    move_dir = [-1, 'Backward']
                 else:
-                    self.move_dir = [1, 'Forward']
-                self.gcode.respond_info(f"Movement direction: {self.move_dir[1]}")
-                self.magnitude = self.new_magnitude
+                    move_dir = [1, 'Forward']
+                self.gcode.respond_info(f'Movement direction: {move_dir[1]}')
+                magnitude = new_magnitude
 
                 while True:
-                    buzz = False if self.magnitude > self.fast_threshold and self.fast_threshold != 0 else True
-                    self.moving_microsteps = max(int(self.magnitude / self.steps_threshold), 1)
-                    self._stepper_move(self.lookup_stepper, self.moving_microsteps * self.move_dir[0] * self.move_len)
-                    self.actual_microsteps += self.moving_microsteps
-                    self.new_magnitude = self._measure(axis, buzz)
+                    buzz = False if magnitude > self.fast_threshold and self.fast_threshold != 0 else True
+                    moving_microsteps = max(int(magnitude / self.steps_threshold), 1)
+                    self._stepper_move(self.lookup_stepper, moving_microsteps * move_dir[0] * self.move_len)
+                    actual_microsteps += moving_microsteps * move_dir[0]
+                    new_magnitude = self._measure(axis, buzz)
                     if self.respond: self.gcode.respond_info(
-                        f'New magnitude: {self.new_magnitude} '
-                        f'on {self.move_dir[0] * self.moving_microsteps}/{self.microsteps} step move')
-                    if self.new_magnitude > self.magnitude:
-                        self._stepper_move(self.lookup_stepper, self.moving_microsteps * self.move_len * self.move_dir[0] * -1)
-                        self.actual_microsteps -= self.moving_microsteps
-                        if self.force_threshold != 0 and self.magnitude > self.force_threshold:
+                        f'New magnitude: {new_magnitude} '
+                        f'on {move_dir[0] * moving_microsteps}/{self.microsteps} step move')
+                    if new_magnitude > magnitude:
+                        self._stepper_move(self.lookup_stepper, moving_microsteps * self.move_len * move_dir[0] * -1)
+                        actual_microsteps += moving_microsteps * move_dir[0] * -1
+                        if self.force_threshold != 0 and magnitude > self.force_threshold:
                             if retries > self.max_retries:
                                 raise self.gcode.error('Too many retries')
                             if self.respond: self.gcode.respond_info(
                                 f'Retries: {retries}/{self.max_retries} Back on last magnitude: '
-                                f'{self.magnitude} on {self.move_dir[0] * self.actual_microsteps}/'
+                                f'{magnitude} on {move_dir[0] * actual_microsteps}/'
                                 f'{self.microsteps} step to reach {self.force_threshold}')
                             retries += 1
                             break
                         total_info.append(
-                            f'{axis.upper()} Motors adjusted by {self.actual_microsteps}/{self.microsteps} step, '
-                            f'magnitude {self.magnitude_before_sync} --> {self.magnitude}')
+                            f'{axis.upper()} Motors adjusted by {actual_microsteps}/{self.microsteps} step, '
+                            f'magnitude {magnitude_before_sync} --> {magnitude}')
                         if self.respond: self.gcode.respond_info(total_info[-1])
                         running = False
                         break
-                    self.magnitude = self.new_magnitude
+                    magnitude = new_magnitude
         if self.respond:
             if len(total_info) > 1:
                 self.gcode.respond_info(total_info[0])
