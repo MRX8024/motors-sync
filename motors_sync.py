@@ -3,11 +3,11 @@ import numpy as np
 from . import adxl345
 
 
-DATA_FOLDER = '/tmp'
-DELAY = 1.00                # Delay between checks csv in tmp in sec
-OPEN_DELAY = 0.25           # Delay between open csv in sec
-TIMER = 20.00               # Exit program time in sec
-MEDIAN_FILTER_WINDOW = 3
+DATA_FOLDER = '/tmp'        # Folder where csv are generate
+DELAY = 0.05                # Delay between checks csv in /tmp in sec
+OPEN_DELAY = 0.1            # Delay between open csv in sec
+TIMER = 5.00                # Exit program time in sec
+MEDIAN_FILTER_WINDOW = 3    # Number of window lines
 static_data = ''
 z_axis = ''
 
@@ -65,28 +65,28 @@ class MotorsSync:
 
     def _static_measure(self):
         global z_axis, static_data
+        # Measure vibrations
         self._send(f'ACCELEROMETER_MEASURE CHIP={self.accel_chip} NAME=stand_still')
         time.sleep(0.25)
         self._send(f'ACCELEROMETER_MEASURE CHIP={self.accel_chip} NAME=stand_still')
-        self._wait_csv()
-        for f in os.listdir(DATA_FOLDER):
-            if f.endswith('stand_still.csv'):
-                with open(os.path.join(DATA_FOLDER, f), 'r') as file:
-                    vect = np.mean(np.genfromtxt(file, delimiter=',', skip_header=1, usecols=(1, 2, 3)), axis=0)
-                    z_axis = np.abs(vect[0:]).argmax()
-                    xy_vect = np.delete(vect, z_axis, axis=0)
-                    static_data = round(np.linalg.norm(xy_vect, axis=0), 2)
-                    os.remove(os.path.join(DATA_FOLDER, f))
+        # Init CSV file
+        file = self._wait_csv('stand_still.csv')
+        vect = np.mean(np.genfromtxt(file, delimiter=',', skip_header=1, usecols=(1, 2, 3)), axis=0)
+        os.remove(file)
+        # Calculate static and find z axis for future exclude
+        z_axis = np.abs(vect[0:]).argmax()
+        xy_vect = np.delete(vect, z_axis, axis=0)
+        static_data = round(np.linalg.norm(xy_vect, axis=0), 2)
 
-    def _wait_csv(self):
+    def _wait_csv(self, name):
         timer = 0
         while True:
             time.sleep(DELAY)
             timer += 1
             for f in os.listdir(DATA_FOLDER):
-                if f.endswith('.csv'):
+                if f.endswith(name):
                     time.sleep(OPEN_DELAY)
-                    return
+                    return os.path.join(DATA_FOLDER, f)
                 elif timer > TIMER / DELAY:
                     raise self.gcode.error(f'No CSV files found in the directory, aborting')
                 else: continue
@@ -102,22 +102,17 @@ class MotorsSync:
 
     def _calc_magnitude(self):
         try:
-            self._wait_csv()
-            # Get the list of all CSV files in the directory
-            csv_files = [f for f in os.listdir(DATA_FOLDER) if f.endswith('.csv')]
-            if len(csv_files) > 1:
-                self.gcode.error("More than one CSV file found! Aborting")
-            file_name = csv_files[0]
-            file_path = os.path.join(DATA_FOLDER, file_name)
-            vect = np.genfromtxt(file_path, delimiter=',', skip_header=1, usecols=range(1,4))
+            # Init CSV file
+            file = self._wait_csv('.csv')
+            vect = np.genfromtxt(file, delimiter=',', skip_header=1, usecols=range(1,4))
+            os.remove(file)
             xy_vect = np.delete(vect, z_axis, axis=1)
-            os.remove(file_path)
             # Add window mean filter
             magnitude = []
             for i in range(int(MEDIAN_FILTER_WINDOW / 2), len(xy_vect) - int(MEDIAN_FILTER_WINDOW / 2)):
                 filtered_xy_vect = (np.median([xy_vect[i-1], xy_vect[i], xy_vect[i+1]], axis=0))
                 magnitude.append(np.linalg.norm(filtered_xy_vect))
-            # Return average of 5 maximum magnitudes
+            # Return avg of 5 max magnitudes with deduction static
             magnitude = np.mean(np.sort(magnitude)[-5:])
             return round(magnitude - static_data, 2)
         except Exception as e:
