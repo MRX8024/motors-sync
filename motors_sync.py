@@ -22,11 +22,11 @@ class MotorsSync:
         self.printer.register_event_handler("klippy:connect", self.handler)
         # Read config
         self.accel_chip = self.config.get('accel_chip', (self.config.getsection('resonance_tester').get('accel_chip')))
-        self.microsteps = self.config.getint('microsteps', default=16, minval=2, maxval=16)
+        self.microsteps = self.config.getint('microsteps', default=16, minval=2, maxval=32)
         self.steps_threshold = self.config.getint('steps_threshold', default=1000000, minval=5000, maxval=100000)
-        self.fast_threshold = self.config.getint('fast_threshold', default=0, minval=0, maxval=100000)
-        self.force_threshold = self.config.getint('force_threshold', default=0, minval=0, maxval=100000)
-        self.max_retries = self.config.getint('threshold_retries', default=0, minval=0, maxval=10)
+        self.fast_threshold = self.config.getint('fast_threshold', default=None, minval=0, maxval=100000)
+        self.retry_tolerance = self.config.getint('retry_tolerance', default=None, minval=0, maxval=100000)
+        self.max_retries = self.config.getint('retries', default=None, minval=0, maxval=10)
         self.respond = self.config.getboolean('respond', default=True)
         # Register commands
         self.gcode = self.printer.lookup_object('gcode')
@@ -63,20 +63,20 @@ class MotorsSync:
             return split
         except: return ['x', 'y']
 
-    def _static_measure(self, file_path):
+    def _static_measure(self):
         global z_axis, static_data
         self._send(f'ACCELEROMETER_MEASURE CHIP={self.accel_chip} NAME=stand_still')
         time.sleep(0.25)
         self._send(f'ACCELEROMETER_MEASURE CHIP={self.accel_chip} NAME=stand_still')
         self._wait_csv()
-        for f in os.listdir(file_path):
+        for f in os.listdir(DATA_FOLDER):
             if f.endswith('stand_still.csv'):
-                with open(os.path.join(file_path, f), 'r') as file:
+                with open(os.path.join(DATA_FOLDER, f), 'r') as file:
                     vect = np.mean(np.genfromtxt(file, delimiter=',', skip_header=1, usecols=(1, 2, 3)), axis=0)
                     z_axis = np.abs(vect[0:]).argmax()
                     xy_vect = np.delete(vect, z_axis, axis=0)
                     static_data = round(np.linalg.norm(xy_vect, axis=0), 2)
-                    os.remove(os.path.join(file_path, f))
+                    os.remove(os.path.join(DATA_FOLDER, f))
 
     def _wait_csv(self):
         timer = 0
@@ -94,7 +94,7 @@ class MotorsSync:
     def _buzz(self, stepper):
         lookup_sec_stepper = self.force_move._lookup_stepper({'STEPPER': stepper + '1'})
         self._stepper_switch(stepper, 0)
-        for i in range(0, int(self.move_len * 3200)):
+        for i in range(0, int(self.microsteps * 2.5)):
             dist = (1 - self.move_len * 2 * i) * 2
             self._stepper_move(lookup_sec_stepper, dist)
             self._stepper_move(lookup_sec_stepper, -dist)
@@ -133,7 +133,7 @@ class MotorsSync:
         self._send(f'ACCELEROMETER_MEASURE CHIP={self.accel_chip}')
         return self._calc_magnitude()
 
-    def prestart(self):
+    def _prestart(self):
         os.system(f'rm -f {DATA_FOLDER}/*.csv')
         now = self.printer.get_reactor().monotonic()
         kin_status = self.toolhead.get_kinematics().get_status(now)
@@ -151,10 +151,10 @@ class MotorsSync:
         self.accel_chip = gcmd.get('ACCEL_CHIP', self.accel_chip)
         self.steps_threshold = gcmd.get_int('STEPS_THRESHOLD', self.steps_threshold, minval=5000, maxval=100000)
         self.fast_threshold = gcmd.get_int('FAST_THRESHOLD', self.fast_threshold, minval=0, maxval=100000)
-        self.force_threshold = gcmd.get_int('FORCE_THRESHOLD', self.force_threshold, minval=0, maxval=100000)
-        self.max_retries = gcmd.get_int('THRESHOLD_RETRIES', self.max_retries, minval=0, maxval=10)
-        self.prestart()
-        self._static_measure(DATA_FOLDER)
+        self.retry_tolerance = gcmd.get_int('RETRY_TOLERANCE', self.retry_tolerance, minval=0, maxval=100000)
+        self.max_retries = gcmd.get_int('RETRIES', self.max_retries, minval=0, maxval=10)
+        self._prestart()
+        self._static_measure()
         total_info = []
         for axis in self.axes:
             axis = axis.lower()
@@ -170,7 +170,7 @@ class MotorsSync:
             running = True
             retries = 0
             while running:
-                moving_microsteps = max(int(magnitude / (self.steps_threshold)), 1)
+                moving_microsteps = max(int(magnitude / self.steps_threshold), 1)
                 self._stepper_move(self.lookup_stepper, moving_microsteps * self.move_len)
                 actual_microsteps += moving_microsteps
                 new_magnitude = self._measure(axis, True)
@@ -187,7 +187,7 @@ class MotorsSync:
                 magnitude = new_magnitude
 
                 while True:
-                    buzz = False if magnitude > self.fast_threshold and self.fast_threshold != 0 else True
+                    buzz = False if magnitude > self.fast_threshold and self.fast_threshold else True
                     moving_microsteps = max(int(magnitude / self.steps_threshold), 1)
                     self._stepper_move(self.lookup_stepper, moving_microsteps * move_dir[0] * self.move_len)
                     actual_microsteps += moving_microsteps * move_dir[0]
@@ -198,14 +198,17 @@ class MotorsSync:
                     if new_magnitude > magnitude:
                         self._stepper_move(self.lookup_stepper, moving_microsteps * self.move_len * move_dir[0] * -1)
                         actual_microsteps += moving_microsteps * move_dir[0] * -1
-                        if self.force_threshold != 0 and magnitude > self.force_threshold:
+                        if self.retry_tolerance and magnitude > self.retry_tolerance:
+                            retries += 1
                             if retries > self.max_retries:
+                                self.gcode.respond_info(
+                                    f'{axis.upper()} Motors adjusted by {actual_microsteps}/{self.microsteps} step, '
+                                    f'magnitude {magnitude_before_sync} --> {magnitude}')
                                 raise self.gcode.error('Too many retries')
                             if self.respond: self.gcode.respond_info(
                                 f'Retries: {retries}/{self.max_retries} Back on last magnitude: '
-                                f'{magnitude} on {move_dir[0] * actual_microsteps}/'
-                                f'{self.microsteps} step to reach {self.force_threshold}')
-                            retries += 1
+                                f'{magnitude} on {actual_microsteps}/'
+                                f'{self.microsteps} step to reach {self.retry_tolerance}')
                             break
                         total_info.append(
                             f'{axis.upper()} Motors adjusted by {actual_microsteps}/{self.microsteps} step, '
