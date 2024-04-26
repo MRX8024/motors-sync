@@ -23,11 +23,11 @@ bash ~/motors-sync/install.sh
 #fast_threshold:
 #    Threshold up to which the motor will not perform decaying oscillations,
 #    to save time, due to the already high deviations.
-#force_threshold:
+#retry_tolerance:
 #    Forced threshold to which the stepper motor will have to lower
 #    deviations by repeating the measurement procedure n number of times,
 #    described by the next parameter.
-#threshold_retries: 0
+#retries: 0
 #    Maximum number of repetitions to achieve forced motor synchronization
 #    deviation threshold.
 #respond: True
@@ -42,7 +42,7 @@ bash ~/motors-sync/install.sh
    Some parameters can be overridden:
    ```
    SYNC_MOTORS [AXIS=<axis>] [STEPS_THRESHOLD=<value>] [FAST_THRESHOLD=<value>]
-   [FORCE_THRESHOLD=<value>] [THRESHOLD_RETRIES=<value>]
+   [RETRY_TOLERANCE=<value>] [RETRIES=<value>]
    ```
 
 5. Notes:
