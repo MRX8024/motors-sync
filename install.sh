@@ -14,18 +14,6 @@ cfg_incl_path=~/printer_data/config/printer.cfg
 
 ln -sf "$repo_path/$module_name" $module_path # Перезапись
 
-## Добавление строки [include] в printer.cfg
-#if [ -f "$cfg_incl_path" ]; then
-#    if ! grep -q "^\[include $cfg_name\]$" "$cfg_incl_path"; then
-#        sudo service klipper stop
-#        sed -i "1i\[include $cfg_name]" "$cfg_incl_path"
-#        # echo "Including $cfg_name to $cfg_incl_path successfully complete"
-#        sudo service klipper start
-#    else
-#        echo "Including $cfg_name aborted, $cfg_name already exists in $cfg_incl_path"
-#    fi
-#fi
-
 # Добавление строки [force_move] в printer.cfg
 if [ -f "$cfg_incl_path" ]; then
     if ! grep -q "^\[force_move\]$" "$cfg_incl_path"; then
@@ -36,18 +24,6 @@ if [ -f "$cfg_incl_path" ]; then
         sudo service klipper start
     else
         echo "Including [force_move] aborted, [force_move] already exists in $cfg_incl_path"
-    fi
-fi
-
-# Добавление строки [respond] в printer.cfg
-if [ -f "$cfg_incl_path" ]; then
-    if ! grep -q "^\[respond\]$" "$cfg_incl_path"; then
-        sudo service klipper stop
-        sed -i "1i\[respond]" "$cfg_incl_path"
-        # echo "Including [respond] to $cfg_incl_path successfully complete"
-        sudo service klipper start
-    else
-        echo "Including [respond] aborted, [respond] already exists in $cfg_incl_path"
     fi
 fi
 
