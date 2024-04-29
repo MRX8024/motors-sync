@@ -26,7 +26,7 @@ class MotorsSync:
         self.steps_threshold = self.config.getint('steps_threshold', default=1000000, minval=5000, maxval=100000)
         self.fast_threshold = self.config.getint('fast_threshold', default=None, minval=0, maxval=100000)
         self.retry_tolerance = self.config.getint('retry_tolerance', default=None, minval=0, maxval=100000)
-        self.max_retries = self.config.getint('retries', default=None, minval=0, maxval=10)
+        self.max_retries = self.config.getint('retries', default=0, minval=0, maxval=10)
         self.respond = self.config.getboolean('respond', default=True)
         # Register commands
         self.gcode = self.printer.lookup_object('gcode')
@@ -122,6 +122,7 @@ class MotorsSync:
         stepper = 'stepper_' + axis
         if buzz: self._buzz(stepper)
         self._stepper_switch(stepper, 0)
+        time.sleep(0.25)
         self._send(f'ACCELEROMETER_MEASURE CHIP={self.accel_chip}')
         time.sleep(0.25)
         self._stepper_switch(stepper, 1)
@@ -182,7 +183,7 @@ class MotorsSync:
                 magnitude = new_magnitude
 
                 while True:
-                    buzz = False if magnitude > self.fast_threshold and self.fast_threshold else True
+                    buzz = False if self.fast_threshold and magnitude > self.fast_threshold else True
                     moving_microsteps = max(int(magnitude / self.steps_threshold), 1)
                     self._stepper_move(self.lookup_stepper, moving_microsteps * move_dir[0] * self.move_len)
                     actual_microsteps += moving_microsteps * move_dir[0]
