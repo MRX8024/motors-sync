@@ -41,7 +41,7 @@
 
    Некоторые параметры можно переопределять:
    ```
-   SYNC_MOTORS [AXIS=<axis>] [STEPS_THRESHOLD=<value>] [FAST_THRESHOLD=<value>]
+   SYNC_MOTORS [STEPS_THRESHOLD=<value>] [FAST_THRESHOLD=<value>]
    [RETRY_TOLERANCE=<value>] [RETRIES=<value>]
    ```
 
