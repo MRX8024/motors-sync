@@ -1,16 +1,16 @@
+# Motors synchronization
+#
+# Copyright (C) 2024  Maksim Bolgov <maksim8024@gmail.com>
+#
+# This file may be distributed under the terms of the GNU GPLv3 license.
 import os, logging, time
 import numpy as np
-from . import adxl345
-
 
 DATA_FOLDER = '/tmp'        # Folder where csv are generate
 DELAY = 0.05                # Delay between checks csv in /tmp in sec
 OPEN_DELAY = 0.1            # Delay between open csv in sec
 TIMER = 5.00                # Exit program time in sec
 MEDIAN_FILTER_WINDOW = 3    # Number of window lines
-static_data = ''
-z_axis = ''
-
 
 class MotorsSync:
     def __init__(self, config):
@@ -23,16 +23,18 @@ class MotorsSync:
         # Read config
         self.accel_chip = self.config.get('accel_chip', (self.config.getsection('resonance_tester').get('accel_chip')))
         self.microsteps = self.config.getint('microsteps', default=16, minval=2, maxval=32)
-        self.steps_threshold = self.config.getint('steps_threshold', default=1000000, minval=5000, maxval=100000)
-        self.fast_threshold = self.config.getint('fast_threshold', default=None, minval=0, maxval=100000)
-        self.retry_tolerance = self.config.getint('retry_tolerance', default=None, minval=0, maxval=100000)
+        self.steps_threshold = self.config.getint('steps_threshold', default=999999, minval=5000, maxval=999999)
+        self.fast_threshold = self.config.getint('fast_threshold', default=999999, minval=0, maxval=999999)
+        self.retry_tolerance = self.config.getint('retry_tolerance', default=999999, minval=0, maxval=999999)
         self.max_retries = self.config.getint('retries', default=0, minval=0, maxval=10)
         self.respond = self.config.getboolean('respond', default=True)
         # Register commands
         self.gcode = self.printer.lookup_object('gcode')
         self.gcode.register_command('SYNC_MOTORS', self.cmd_RUN_SYNC, desc='Start 4WD synchronization')
         # Variables
-        self.move_len = 40 / 200 / self.microsteps
+        rd = int(self.config.getsection('stepper_x').get('rotation_distance'))
+        steps_rotation = int(self.config.getsection('stepper_x').get('full_steps_per_rotation', 200))
+        self.move_len = rd / steps_rotation / self.microsteps
 
     def handler(self):
         self.toolhead = self.printer.lookup_object('toolhead')
@@ -64,7 +66,6 @@ class MotorsSync:
         except: return ['x', 'y']
 
     def _static_measure(self):
-        global z_axis, static_data
         # Measure vibrations
         self._send(f'ACCELEROMETER_MEASURE CHIP={self.accel_chip} NAME=stand_still')
         time.sleep(0.25)
@@ -74,9 +75,9 @@ class MotorsSync:
         vect = np.mean(np.genfromtxt(file, delimiter=',', skip_header=1, usecols=(1, 2, 3)), axis=0)
         os.remove(file)
         # Calculate static and find z axis for future exclude
-        z_axis = np.abs(vect[0:]).argmax()
-        xy_vect = np.delete(vect, z_axis, axis=0)
-        static_data = round(np.linalg.norm(xy_vect, axis=0), 2)
+        self.z_axis = np.abs(vect[0:]).argmax()
+        xy_vect = np.delete(vect, self.z_axis, axis=0)
+        self.static_data = round(np.linalg.norm(xy_vect, axis=0), 2)
 
     def _wait_csv(self, name):
         timer = 0
@@ -106,7 +107,7 @@ class MotorsSync:
             file = self._wait_csv('.csv')
             vect = np.genfromtxt(file, delimiter=',', skip_header=1, usecols=range(1,4))
             os.remove(file)
-            xy_vect = np.delete(vect, z_axis, axis=1)
+            xy_vect = np.delete(vect, self.z_axis, axis=1)
             # Add window mean filter
             magnitude = []
             for i in range(int(MEDIAN_FILTER_WINDOW / 2), len(xy_vect) - int(MEDIAN_FILTER_WINDOW / 2)):
@@ -114,7 +115,7 @@ class MotorsSync:
                 magnitude.append(np.linalg.norm(filtered_xy_vect))
             # Return avg of 5 max magnitudes with deduction static
             magnitude = np.mean(np.sort(magnitude)[-5:])
-            return round(magnitude - static_data, 2)
+            return round(magnitude - self.static_data, 2)
         except Exception as e:
             self.gcode.error(f"Error processing generated CSV: {str(e)}")
 
@@ -145,9 +146,9 @@ class MotorsSync:
     def cmd_RUN_SYNC(self, gcmd):
         self.axes = self._parse_axis(gcmd)
         self.accel_chip = gcmd.get('ACCEL_CHIP', self.accel_chip)
-        self.steps_threshold = gcmd.get_int('STEPS_THRESHOLD', self.steps_threshold, minval=5000, maxval=100000)
-        self.fast_threshold = gcmd.get_int('FAST_THRESHOLD', self.fast_threshold, minval=0, maxval=100000)
-        self.retry_tolerance = gcmd.get_int('RETRY_TOLERANCE', self.retry_tolerance, minval=0, maxval=100000)
+        self.steps_threshold = gcmd.get_int('STEPS_THRESHOLD', self.steps_threshold, minval=5000, maxval=999999)
+        self.fast_threshold = gcmd.get_int('FAST_THRESHOLD', self.fast_threshold, minval=0, maxval=999999)
+        self.retry_tolerance = gcmd.get_int('RETRY_TOLERANCE', self.retry_tolerance, minval=0, maxval=999999)
         self.max_retries = gcmd.get_int('RETRIES', self.max_retries, minval=0, maxval=10)
         self._prestart()
         self._static_measure()
@@ -157,7 +158,6 @@ class MotorsSync:
             self.stepper = 'stepper_' + axis
             self.lookup_stepper = self.force_move._lookup_stepper({'STEPPER': self.stepper})
             if self.respond: self.gcode.respond_info(f'{axis.upper()} Motors synchronization...')
-
             # First measurement
             magnitude = self._measure(axis, True)
             actual_microsteps = 0
@@ -173,15 +173,14 @@ class MotorsSync:
                 if self.respond: self.gcode.respond_info(
                     f'New magnitude: {new_magnitude} '
                     f'on {moving_microsteps}/{self.microsteps} step move')
-
                 # Determine movement direction
                 if new_magnitude > magnitude:
                     move_dir = [-1, 'Backward']
                 else:
                     move_dir = [1, 'Forward']
-                self.gcode.respond_info(f'Movement direction: {move_dir[1]}')
+                if self.respond: self.gcode.respond_info(f'Movement direction: {move_dir[1]}')
                 magnitude = new_magnitude
-
+                # Axis calibration to zero magnitude
                 while True:
                     buzz = False if self.fast_threshold and magnitude > self.fast_threshold else True
                     moving_microsteps = max(int(magnitude / self.steps_threshold), 1)
