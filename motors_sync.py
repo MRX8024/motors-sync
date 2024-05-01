@@ -241,6 +241,8 @@ class MotorsSync:
         self.motion[self.motion['min_axis']]['move_dir'][1] = 0
         self._axes_level()
         self.motion[self.motion['min_axis']]['magnitude'] = self._measure(self.motion[self.motion['min_axis']]['stepper'], True)
+        if self.respond: self.gcode.respond_info(
+            f"{self.motion['min_axis'].upper()}-New magnitude: {self.motion[self.motion['min_axis']]['magnitude']}")
         self._final_sync(axes)
         # Info
         for axis in axes:
