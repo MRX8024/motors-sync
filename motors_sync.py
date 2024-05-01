@@ -25,16 +25,18 @@ class MotorsSync:
         # Read config
         self.accel_chip = self.config.get('accel_chip', (self.config.getsection('resonance_tester').get('accel_chip')))
         self.microsteps = self.config.getint('microsteps', default=16, minval=2, maxval=32)
-        self.steps_threshold = self.config.getint('steps_threshold', default=1000000, minval=5000, maxval=100000)
-        self.fast_threshold = self.config.getint('fast_threshold', default=None, minval=0, maxval=100000)
-        self.retry_tolerance = self.config.getint('retry_tolerance', default=None, minval=0, maxval=100000)
+        self.steps_threshold = self.config.getint('steps_threshold', default=999999, minval=5000, maxval=999999)
+        self.fast_threshold = self.config.getint('fast_threshold', default=999999, minval=0, maxval=999999)
+        self.retry_tolerance = self.config.getint('retry_tolerance', default=999999, minval=0, maxval=999999)
         self.max_retries = self.config.getint('retries', default=0, minval=0, maxval=10)
         self.respond = self.config.getboolean('respond', default=True)
         # Register commands
         self.gcode = self.printer.lookup_object('gcode')
         self.gcode.register_command('SYNC_MOTORS', self.cmd_RUN_SYNC, desc='Start 4WD synchronization')
         # Variables
-        self.move_len = 40 / 200 / self.microsteps
+        rd = int(self.config.getsection('stepper_x').get('rotation_distance'))
+        steps_rotation = int(self.config.getsection('stepper_x').get('full_steps_per_rotation', 200))
+        self.move_len = rd / steps_rotation / self.microsteps
 
     def handler(self):
         self.toolhead = self.printer.lookup_object('toolhead')
