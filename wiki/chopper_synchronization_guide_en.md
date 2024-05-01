@@ -43,7 +43,7 @@ bash ~/motors-sync/install.sh
    
    Some parameters can be overridden:
    ```
-   SYNC_MOTORS [AXIS=<axis>] [ACCEL_CHIP=<chip_name>] [STEPS_THRESHOLD=<value>]
+   SYNC_MOTORS [ACCEL_CHIP=<chip_name>] [STEPS_THRESHOLD=<value>]
    [FAST_THRESHOLD=<value>] [RETRY_TOLERANCE=<value>] [RETRIES=<value>]
    ```
    For the convenience of additional parameter settings, you can add macro

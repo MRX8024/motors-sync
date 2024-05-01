@@ -43,7 +43,7 @@
 
    Некоторые параметры можно переопределять:
    ```
-   SYNC_MOTORS [AXIS=<axis>] [ACCEL_CHIP=<chip_name>] [STEPS_THRESHOLD=<value>]
+   SYNC_MOTORS [ACCEL_CHIP=<chip_name>] [STEPS_THRESHOLD=<value>]
    [FAST_THRESHOLD=<value>] [RETRY_TOLERANCE=<value>] [RETRIES=<value>]
    ```
    Для удобства настройки дополнительных параметров можно добавить макрос
