@@ -82,8 +82,8 @@ class MotorsSync:
         # Fading oscillations
         lookup_sec_stepper = self.force_move._lookup_stepper({'STEPPER': stepper + '1'})
         self._stepper_switch(stepper, 0)
-        for i in range(0, int(self.microsteps * 2.5)):
-            dist = (1 - self.move_len * 2 * i) * 2
+        for i in reversed(range(0, int(0.4 / self.move_len))):
+            dist = round((self.move_len * 4 * i), 4)
             self._stepper_move(lookup_sec_stepper, dist)
             self._stepper_move(lookup_sec_stepper, -dist)
         self._stepper_switch(stepper, 1)
