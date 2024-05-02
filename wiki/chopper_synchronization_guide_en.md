@@ -55,7 +55,7 @@ bash ~/motors-sync/install.sh
       A running fan (basically any fan in the printer) may prevent
       correct and more accurate measurements. If it is already
       turned on, then at least try to prevent it from being turned
-      off in the middle of dimensions.
+      off in the middle of measurements.
    2. Synchronization can be started at the beginning of printing
       while the bed is heating up. To do this, you need to add it 
       to the macro \ slicer. For example -
