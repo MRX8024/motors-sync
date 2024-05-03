@@ -1,12 +1,10 @@
-1. Download a program - `sudo git clone https://github.com/MRX8024/motors-sync`
+1. Download a program - `git clone https://github.com/MRX8024/motors-sync`
 2. Create a link to the program - `ln -sf ~/motors-sync/motors_sync.py ~/klipper/klippy/extras/`
 3. Install packages -
 
     ``` sudo apt-get install libatlas-base-dev libopenblas-dev ```
 
-    ``` sudo pip install numpy matplotlib ```
-
-    ``` ~/klippy-env/bin/pip install -v numpy ```
+    ``` ~/klippy-env/bin/pip install numpy matplotlib ```
 
 
 4. Add lines to the configuration -
