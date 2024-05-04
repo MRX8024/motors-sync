@@ -7,11 +7,12 @@ import os, logging, time, itertools
 import numpy as np
 
 DATA_FOLDER = '/tmp'        # Folder where csv are generate
+MEASURE_DELAY = 0.25        # Delay between damped oscillations and measurement
 CSV_DELAY = 0.10            # Delay between checks csv in /tmp in sec
 CSV_OPEN_DELAY = 0.10       # Delay between open csv in sec
 EXIT_TIMER = 5.00           # Exit program time in sec if no file
-MEDIAN_FILTER_WINDOW = 3    # Number of window lines
 AXES_LEVEL_DELTA = 2000     # Magnitude difference between axes
+MEDIAN_FILTER_WINDOW = 3    # Number of window lines
 
 class MotorsSync:
     def __init__(self, config):
@@ -29,7 +30,6 @@ class MotorsSync:
         self.retry_tolerance = self.config.getint('retry_tolerance', default=999999, minval=0, maxval=999999)
         self.max_retries = self.config.getint('retries', default=0, minval=0, maxval=10)
         self.respond = self.config.getboolean('respond', default=True)
-        self.time = self.config.getfloat('time', default=0.025)
         # Register commands
         self.gcode = self.printer.lookup_object('gcode')
         self.gcode.register_command('SYNC_MOTORS', self.cmd_RUN_SYNC, desc='Start 4WD synchronization')
@@ -110,7 +110,7 @@ class MotorsSync:
     def _measure(self, stepper, buzz=True):
         if buzz: self._buzz(stepper)
         self._stepper_switch(stepper, 0)
-        time.sleep(self.time)
+        time.sleep(MEASURE_DELAY)
         self._send(f'ACCELEROMETER_MEASURE CHIP={self.accel_chip}')
         self._stepper_switch(stepper, 1)
         self._send(f'ACCELEROMETER_MEASURE CHIP={self.accel_chip}')
