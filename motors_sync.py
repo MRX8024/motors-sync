@@ -7,11 +7,12 @@ import os, logging, time, itertools
 import numpy as np
 
 DATA_FOLDER = '/tmp'        # Folder where csv are generate
+MEASURE_DELAY = 0.25        # Delay between damped oscillations and measurement
 CSV_DELAY = 0.10            # Delay between checks csv in /tmp in sec
 CSV_OPEN_DELAY = 0.10       # Delay between open csv in sec
 EXIT_TIMER = 5.00           # Exit program time in sec if no file
-MEDIAN_FILTER_WINDOW = 3    # Number of window lines
 AXES_LEVEL_DELTA = 2000     # Magnitude difference between axes
+MEDIAN_FILTER_WINDOW = 3    # Number of window lines
 
 class MotorsSync:
     def __init__(self, config):
@@ -109,7 +110,7 @@ class MotorsSync:
     def _measure(self, stepper, buzz=True):
         if buzz: self._buzz(stepper)
         self._stepper_switch(stepper, 0)
-        time.sleep(0.25)
+        time.sleep(MEASURE_DELAY)
         self._send(f'ACCELEROMETER_MEASURE CHIP={self.accel_chip}')
         self._stepper_switch(stepper, 1)
         self._send(f'ACCELEROMETER_MEASURE CHIP={self.accel_chip}')
@@ -130,30 +131,54 @@ class MotorsSync:
 
     def _axes_level(self):
         # Axes leveling by magnitude
-        max_magnitude = self.motion[self.motion['max_axis']]['new_magnitude']
-        min_magnitude = self.motion[self.motion['min_axis']]['init_magnitude']
-        delta = round(max_magnitude - min_magnitude, 2)
+        main_axis = self.motion['max_axis']
+        sec_axis = self.motion['min_axis']
+        init_max_magnitude = self.motion[main_axis]['new_magnitude']
+        init_min_magnitude = self.motion[sec_axis]['init_magnitude']
+        delta = round(init_max_magnitude - init_min_magnitude, 2)
         if delta > AXES_LEVEL_DELTA:
             self.gcode.respond_info(f'Start axes level, delta: {delta}')
-            m = self.motion[self.motion['max_axis']]
+            m = self.motion[main_axis]
             while True:
-                buzz = False if self.fast_threshold and m['magnitude'] > self.fast_threshold  else True
-                m['moving_msteps'] = max(int((m['magnitude'] - self.motion[self.motion['min_axis']]['magnitude']) / self.steps_threshold), 1)
-                self._stepper_move(m['lookup_stepper'], m['moving_msteps'] * self.move_len * m['move_dir'][0])
-                m['new_magnitude'] = self._measure(m['stepper'], buzz)
-                if self.respond: self.gcode.respond_info(
-                    f"{self.motion['max_axis'].upper()}-New magnitude: {m['new_magnitude']} on "
-                    f"{m['move_dir'][0] * m['moving_msteps']}/{self.microsteps} step move")
-                if m['new_magnitude'] > m['magnitude']:
-                    raise self.gcode.error('Fatal error in loop! Data is incorrect')
-                delta = round(m['new_magnitude'] - min_magnitude, 2)
-                if delta < AXES_LEVEL_DELTA or m['new_magnitude'] < min_magnitude:
+                while True:
+                    if not m['move_dir'][1]: self._detect_move_dir(main_axis)
+                    buzz = False if self.fast_threshold and m['magnitude'] > self.fast_threshold else True
+                    delta = (m['magnitude'] - init_min_magnitude)
+                    m['moving_msteps'] = max(int(delta / self.steps_threshold), 1)
+                    # self.gcode.respond_info(str(m['moving_msteps'] * m['move_dir'][0] + ' ' + m['actual_msteps']))
+                    self._stepper_move(m['lookup_stepper'], m['moving_msteps'] * self.move_len * m['move_dir'][0])
+                    m['actual_msteps'] += m['moving_msteps'] * m['move_dir'][0]
+                    m['new_magnitude'] = self._measure(m['stepper'], buzz)
+                    if self.respond: self.gcode.respond_info(
+                        f"{main_axis.upper()}-New magnitude: {m['new_magnitude']} on "
+                        f"{m['moving_msteps'] * m['move_dir'][0]}/{self.microsteps} step move")
+                    if m['new_magnitude'] > m['magnitude']:
+                        self._stepper_move(m['lookup_stepper'], m['moving_msteps'] * self.move_len * m['move_dir'][0] * -1)
+                        m['actual_msteps'] -= m['moving_msteps'] * m['move_dir'][0]
+                        if self.retry_tolerance and m['magnitude'] > self.retry_tolerance:
+                            self.motion['retries'] += 1
+                            if self.motion['retries'] > self.max_retries:
+                                self.gcode.respond_info(
+                                    f"{main_axis.upper()} Motors adjusted by {m['actual_msteps']}/"
+                                    f"{self.microsteps} step, magnitude {m['init_magnitude']} --> {m['magnitude']}")
+                                raise self.gcode.error('Too many retries')
+                            self.gcode.respond_info(
+                                f"Retries: {self.motion['retries']}/{self.max_retries} Data in loop is incorrect! ")
+                            m['move_dir'][1] = 0
+                            break
+                    delta = round(m['new_magnitude'] - init_min_magnitude, 2)
+                    if delta < AXES_LEVEL_DELTA or m['new_magnitude'] < init_min_magnitude:
+                        m['magnitude'] = m['new_magnitude']
+                        self.gcode.respond_info(
+                            f"Axes are leveled: {main_axis.upper()}: {init_max_magnitude} --> "
+                            f"{m['new_magnitude']} {sec_axis.upper()}: {init_min_magnitude}, delta: {delta}")
+                        # Measure new shifted magnitude on second axis
+                        self.motion[sec_axis]['magnitude'] = self._measure(self.motion[sec_axis]['stepper'], True)
+                        if self.respond: self.gcode.respond_info(
+                            f"{sec_axis.upper()}-New magnitude: {self.motion[sec_axis]['magnitude']}")
+                        return
                     m['magnitude'] = m['new_magnitude']
-                    self.gcode.respond_info(
-                        f"Axes are leveled: {self.motion['max_axis'].upper()}: {max_magnitude} --> "
-                        f"{m['new_magnitude']} {self.motion['min_axis'].upper()}: {min_magnitude}, delta: {delta}")
-                    break
-                m['magnitude'] = m['new_magnitude']
+                    continue
 
     def _detect_move_dir(self, axis):
         # Determine movement direction
@@ -170,10 +195,6 @@ class MotorsSync:
 
     def _final_sync(self):
         # Axes calibration to zero magnitude
-        self.gcode.respond_info(f'Final stage of sync')
-        self.motion[self.motion['min_axis']]['magnitude'] = self._measure(self.motion[self.motion['min_axis']]['stepper'], True)
-        if self.respond: self.gcode.respond_info(
-            f"{self.motion['min_axis'].upper()}-New magnitude: {self.motion[self.motion['min_axis']]['magnitude']}")
         if self.motion['min_axis'] == self.axes[-1]: self.axes.reverse()
         for axis in itertools.cycle(self.axes):
             m = self.motion[axis]
@@ -182,23 +203,23 @@ class MotorsSync:
                 buzz = False if self.fast_threshold and m['magnitude'] > self.fast_threshold else True
                 m['moving_msteps'] = max(int(m['magnitude'] / self.steps_threshold), 1)
                 self._stepper_move(m['lookup_stepper'], m['moving_msteps'] * self.move_len * m['move_dir'][0])
-                m['actual_msteps'] += m['moving_msteps']
+                m['actual_msteps'] += m['moving_msteps'] * m['move_dir'][0]
                 m['new_magnitude'] = self._measure(m['stepper'], buzz)
                 if self.respond: self.gcode.respond_info(
                     f"{axis.upper()}-New magnitude: {m['new_magnitude']}"
-                    f" on {m['move_dir'][0] * m['moving_msteps']}/{self.microsteps} step move")
+                    f" on {m['moving_msteps'] * m['move_dir'][0]}/{self.microsteps} step move")
                 if m['new_magnitude'] > m['magnitude']:
                     self._stepper_move(m['lookup_stepper'], m['moving_msteps'] * self.move_len * m['move_dir'][0] * -1)
                     m['actual_msteps'] -= m['moving_msteps'] * m['move_dir'][0]
                     if self.retry_tolerance and m['magnitude'] > self.retry_tolerance:
-                        m['retries'] += 1
-                        if m['retries'] > self.max_retries:
+                        self.motion['retries'] += 1
+                        if self.motion['retries'] > self.max_retries:
                             self.gcode.respond_info(
                                 f"{axis.upper()} Motors adjusted by {m['actual_msteps']}/{self.microsteps}"
                                 f" step, magnitude {m['init_magnitude']} --> {m['magnitude']}")
                             raise self.gcode.error('Too many retries')
                         if self.respond: self.gcode.respond_info(
-                            f"{axis.upper()} Retries: {m['retries']}/{self.max_retries} Back on last magnitude:"
+                            f"{axis.upper()} Retries: {self.motion['retries']}/{self.max_retries} Back on last magnitude:"
                             f" {m['magnitude']} on {m['actual_msteps']}/{self.microsteps} step to reach {self.retry_tolerance}")
                         m['move_dir'][1] = 0
                         continue
@@ -233,11 +254,13 @@ class MotorsSync:
             self.motion[axis]['move_dir'] = [1, 'Forward']
             self.motion[axis]['moving_msteps'] = max(int(self.motion[axis]['magnitude'] / self.steps_threshold), 1)
             self.motion[axis]['actual_msteps'] = 0
-            self.motion[axis]['retries'] = 0
             self.motion[axis]['out'] = 0
             if self.respond: self.gcode.respond_info(f"{axis.upper()}-Initial magnitude: {self.motion[axis]['init_magnitude']}")
-        self.motion['max_axis'] = max(self.motion, key=lambda level: self.motion[level]['init_magnitude'] if 'init_magnitude' in self.motion[level] else float('-inf'))
-        self.motion['min_axis'] = min(self.motion, key=lambda level: self.motion[level]['init_magnitude'] if 'init_magnitude' in self.motion[level] else float('inf'))
+        self.motion['retries'] = 0
+        self.motion['max_axis'] = max(self.motion, key=lambda level: self.motion[level]['init_magnitude'] if isinstance(
+            self.motion[level], dict) and 'init_magnitude' in self.motion[level] else float('-inf'))
+        self.motion['min_axis'] = min(self.motion, key=lambda level: self.motion[level]['init_magnitude'] if isinstance(
+            self.motion[level], dict) and 'init_magnitude' in self.motion[level] else float('inf'))
         self._detect_move_dir(self.motion['max_axis'])
         self.motion[self.motion['min_axis']]['move_dir'][1] = 0
         self._axes_level()
