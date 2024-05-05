@@ -139,6 +139,7 @@ class MotorsSync:
         if delta > AXES_LEVEL_DELTA:
             self.gcode.respond_info(f'Start axes level, delta: {delta}')
             m = self.motion[main_axis]
+            force_exit = False
             while True:
                 while True:
                     if not m['move_dir'][1]: self._detect_move_dir(main_axis)
@@ -166,8 +167,9 @@ class MotorsSync:
                                 f"Retries: {self.motion['retries']}/{self.max_retries} Data in loop is incorrect! ")
                             m['move_dir'][1] = 0
                             break
+                        force_exit = True
                     delta = round(m['new_magnitude'] - init_min_magnitude, 2)
-                    if delta < AXES_LEVEL_DELTA or m['new_magnitude'] < init_min_magnitude:
+                    if delta < AXES_LEVEL_DELTA or m['new_magnitude'] < init_min_magnitude or force_exit:
                         m['magnitude'] = m['new_magnitude']
                         self.gcode.respond_info(
                             f"Axes are leveled: {main_axis.upper()}: {init_max_magnitude} --> "
