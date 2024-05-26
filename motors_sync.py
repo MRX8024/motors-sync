@@ -5,6 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import os, logging, time, itertools
 import numpy as np
+from . import z_tilt
 
 DATA_FOLDER = '/tmp'        # Folder where csv are generate
 MEASURE_DELAY = 0.25        # Delay between damped oscillations and measurement
@@ -23,6 +24,7 @@ class MotorsSync:
         self.force_move = self.printer.load_object(config, 'force_move')
         self.stepper_en = self.printer.load_object(config, 'stepper_enable')
         self.printer.register_event_handler("klippy:connect", self.handler)
+        self.z_status = z_tilt.ZAdjustStatus(self.printer)
         # Read config
         self.accel_chip = self._get_chip()
         self.microsteps = self.config.getint('microsteps', default=16, minval=2, maxval=32)
@@ -242,8 +244,9 @@ class MotorsSync:
                 if self.motion[self.axes[0]]['out'] and self.motion[self.axes[1]]['out']: break
 
     def cmd_RUN_SYNC(self, gcmd):
-        # Live variables
         self.axes = ['x', 'y']
+        self.z_status.reset()
+        # Live variables
         self.accel_chip = gcmd.get('ACCEL_CHIP', self.accel_chip)
         self.steps_threshold = gcmd.get_int('STEPS_THRESHOLD', self.steps_threshold, minval=5000, maxval=999999)
         self.fast_threshold = gcmd.get_int('FAST_THRESHOLD', self.fast_threshold, minval=0, maxval=999999)
@@ -276,9 +279,13 @@ class MotorsSync:
         self.motion[self.motion['min_axis']]['move_dir'][1] = 0
         self._axes_level()
         self._final_sync()
+        self.z_status.check_retry_result('done')
         # Info
         for axis in self.axes:
             self.gcode.respond_info(f"{self.motion[axis]['out']}\n")
+
+    def get_status(self, eventtime):
+        return self.z_status.get_status(eventtime)
 
 def load_config(config):
     return MotorsSync(config)
