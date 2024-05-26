@@ -52,19 +52,34 @@ bash ~/motors-sync/install.sh
 
 5. Notes:
    1. Do not turn on the hotend heating during synchronization.
-      A running fan (basically any fan in the printer) may prevent
-      correct and more accurate measurements. If it is already
-      turned on, then at least try to prevent it from being turned
-      off in the middle of measurements.
-   2. Synchronization can be started at the beginning of printing
-      while the bed is heating up. To do this, you need to add it 
-      to the macro \ slicer. For example -
+      A running fan (basically any fan in the printer) may prevent correct
+      and more accurate measurements. But if it has to be turned on, try
+      not to let it turn off in the middle of measurements. You can compare
+      noises with the command - `MEASURE_AXES_NOISE`
+
+
+6. Synchronization can be started at the beginning of printing
+   while the bed is heating up. To do this, you need to add it 
+   to the macro \ slicer. For example -
 ```
 M140 S   ;set bed temp
 SYNC_MOTORS
-G28
+G28 Z
 M190 S   ; wait for bed temp to stabilize
 M104 S   ;set extruder temp
 BED_MESH_CALIBRATE
+...
+```
+7. A variable situation is also introduced, which is reset when the printer
+   motors are turned off. You can check its status inside the macro, and do
+   not do calibration again, if it has already been done in the current
+   session. For example -
+```
+...
+G28 X Y
+{% if not printer.motors_sync.applied %}
+    SYNC_MOTORS
+{% endif %}
+G28 Z
 ...
 ```
