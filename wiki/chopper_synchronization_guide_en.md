@@ -16,7 +16,7 @@ bash ~/motors-sync/install.sh
 #microsteps: 16
 #    Maximum microstepping of stepper motor rotor displacement, not worth
 #    increase the value above 16, do so at your own peril and risk.
-#steps_threshold: 999999
+#steps_coeff: 999999 (deprecated steps_threshold)
 #    Coefficient of number of microsteps of shaft displacement, depending 
 #    on the magnitude value (impact), adjusted experimentally. Let's say
 #    if our impact was 50,000 units, and the coeff was 10,000 - the motor
@@ -43,7 +43,7 @@ bash ~/motors-sync/install.sh
    
    Some parameters can be overridden:
    ```
-   SYNC_MOTORS [ACCEL_CHIP=<chip_name>] [STEPS_THRESHOLD=<value>]
+   SYNC_MOTORS [ACCEL_CHIP=<chip_name>] [STEPS_COEFF=<value>]
    [FAST_THRESHOLD=<value>] [RETRY_TOLERANCE=<value>] [RETRIES=<value>]
    ```
    For the convenience of additional parameter settings, you can add macro

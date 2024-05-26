@@ -28,7 +28,7 @@ class MotorsSync:
         # Read config
         self.accel_chip = self._get_chip()
         self.microsteps = self.config.getint('microsteps', default=16, minval=2, maxval=32)
-        self.steps_threshold = self.config.getint('steps_threshold', default=999999, minval=5000, maxval=999999)
+        self.steps_coeff = self.config.getint('steps_coeff', default=999999, minval=5000, maxval=999999)
         self.fast_threshold = self.config.getint('fast_threshold', default=999999, minval=0, maxval=999999)
         self.retry_tolerance = self.config.getint('retry_tolerance', default=999999, minval=0, maxval=999999)
         self.max_retries = self.config.getint('retries', default=0, minval=0, maxval=10)
@@ -36,9 +36,9 @@ class MotorsSync:
         # Register commands
         self.gcode.register_command('SYNC_MOTORS', self.cmd_RUN_SYNC, desc='Start 4WD synchronization')
         # Variables
-        rd = int(self.config.getsection('stepper_x').get('rotation_distance'))
-        steps_rotation = int(self.config.getsection('stepper_x').get('full_steps_per_rotation', 200))
-        self.move_len = rd / steps_rotation / self.microsteps
+        rotation_distance = int(self.config.getsection('stepper_x').get('rotation_distance'))
+        steps_per_rotation = int(self.config.getsection('stepper_x').get('full_steps_per_rotation', 200))
+        self.move_len = rotation_distance / steps_per_rotation / self.microsteps
 
     def handler(self):
         self.toolhead = self.printer.lookup_object('toolhead')
@@ -156,7 +156,7 @@ class MotorsSync:
                     if not m['move_dir'][1]: self._detect_move_dir(main_axis)
                     buzz = False if self.fast_threshold and m['magnitude'] > self.fast_threshold else True
                     delta = (m['magnitude'] - init_min_magnitude)
-                    m['moving_msteps'] = max(int(delta / self.steps_threshold), 1)
+                    m['moving_msteps'] = max(int(delta / self.steps_coeff), 1)
                     # self.gcode.respond_info(str(m['moving_msteps'] * m['move_dir'][0] + ' ' + m['actual_msteps']))
                     self._stepper_move(m['lookup_stepper'], m['moving_msteps'] * self.move_len * m['move_dir'][0])
                     m['actual_msteps'] += m['moving_msteps'] * m['move_dir'][0]
@@ -214,7 +214,7 @@ class MotorsSync:
             if not m['out']:
                 if not m['move_dir'][1]: self._detect_move_dir(axis)
                 buzz = False if self.fast_threshold and m['magnitude'] > self.fast_threshold else True
-                m['moving_msteps'] = max(int(m['magnitude'] / self.steps_threshold), 1)
+                m['moving_msteps'] = max(int(m['magnitude'] / self.steps_coeff), 1)
                 self._stepper_move(m['lookup_stepper'], m['moving_msteps'] * self.move_len * m['move_dir'][0])
                 m['actual_msteps'] += m['moving_msteps'] * m['move_dir'][0]
                 m['new_magnitude'] = self._measure(m['stepper'], buzz)
@@ -248,7 +248,7 @@ class MotorsSync:
         self.z_status.reset()
         # Live variables
         self.accel_chip = gcmd.get('ACCEL_CHIP', self.accel_chip)
-        self.steps_threshold = gcmd.get_int('STEPS_THRESHOLD', self.steps_threshold, minval=5000, maxval=999999)
+        self.steps_coeff = gcmd.get_int('STEPS_COEFF', self.steps_coeff, minval=5000, maxval=999999)
         self.fast_threshold = gcmd.get_int('FAST_THRESHOLD', self.fast_threshold, minval=0, maxval=999999)
         self.retry_tolerance = gcmd.get_int('RETRY_TOLERANCE', self.retry_tolerance, minval=0, maxval=999999)
         self.max_retries = gcmd.get_int('RETRIES', self.max_retries, minval=0, maxval=10)
@@ -266,7 +266,7 @@ class MotorsSync:
             self.motion[axis]['magnitude'] = self.motion[axis]['init_magnitude']
             self.motion[axis]['new_magnitude'] = 0
             self.motion[axis]['move_dir'] = [1, 'Forward']
-            self.motion[axis]['moving_msteps'] = max(int(self.motion[axis]['magnitude'] / self.steps_threshold), 1)
+            self.motion[axis]['moving_msteps'] = max(int(self.motion[axis]['magnitude'] / self.steps_coeff), 1)
             self.motion[axis]['actual_msteps'] = 0
             self.motion[axis]['out'] = 0
             if self.respond: self.gcode.respond_info(f"{axis.upper()}-Initial magnitude: {self.motion[axis]['init_magnitude']}")
