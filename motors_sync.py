@@ -18,12 +18,13 @@ class MotorsSync:
     def __init__(self, config):
         self.config = config
         self.printer = config.get_printer()
+        self.gcode = self.printer.lookup_object('gcode')
         self.gcode_move = self.printer.load_object(config, 'gcode_move')
         self.force_move = self.printer.load_object(config, 'force_move')
         self.stepper_en = self.printer.load_object(config, 'stepper_enable')
         self.printer.register_event_handler("klippy:connect", self.handler)
         # Read config
-        self.accel_chip = self.config.get('accel_chip', (self.config.getsection('resonance_tester').get('accel_chip')))
+        self.accel_chip = self._get_chip()
         self.microsteps = self.config.getint('microsteps', default=16, minval=2, maxval=32)
         self.steps_threshold = self.config.getint('steps_threshold', default=999999, minval=5000, maxval=999999)
         self.fast_threshold = self.config.getint('fast_threshold', default=999999, minval=0, maxval=999999)
@@ -31,7 +32,6 @@ class MotorsSync:
         self.max_retries = self.config.getint('retries', default=0, minval=0, maxval=10)
         self.respond = self.config.getboolean('respond', default=True)
         # Register commands
-        self.gcode = self.printer.lookup_object('gcode')
         self.gcode.register_command('SYNC_MOTORS', self.cmd_RUN_SYNC, desc='Start 4WD synchronization')
         # Variables
         rd = int(self.config.getsection('stepper_x').get('rotation_distance'))
@@ -41,6 +41,15 @@ class MotorsSync:
     def handler(self):
         self.toolhead = self.printer.lookup_object('toolhead')
         self.travel_speed = self.toolhead.max_velocity / 2
+
+    def _get_chip(self):
+        try:
+            return self.config.get('accel_chip')
+        except:
+            try:
+                return self.config.getsection('resonance_tester').get('accel_chip')
+            except:
+                raise self.gcode.error(f"Option 'accel_chip' in section 'motors_sync' must be specified")
 
     def _send(self, func):
         self.gcode._process_commands([func], False)
