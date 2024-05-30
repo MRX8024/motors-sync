@@ -70,7 +70,7 @@ M104 S   ;set extruder temp
 BED_MESH_CALIBRATE
 ...
 ```
-7. A variable situation is also introduced, which is reset when the printer
+7. A variable of status is also introduced, which is reset when the printer
    motors are turned off. You can check its status inside the macro, and do
    not do calibration again, if it has already been done in the current
    session. For example -
