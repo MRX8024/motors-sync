@@ -1,6 +1,6 @@
 #!/bin/bash
 repo=motors-sync
-repo_path=~/motors-sync/
+repo_path="$( cd "$( dirname "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )"
 
 # Сворачивание от root
 if [ "$(id -u)" = "0" ]; then
