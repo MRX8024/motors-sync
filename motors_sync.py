@@ -5,6 +5,7 @@
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import os, logging, time, itertools
 import numpy as np
+import math
 from . import z_tilt
 
 DATA_FOLDER = '/tmp'        # Folder where csv are generate
@@ -131,10 +132,10 @@ class MotorsSync:
         os.system(f'rm -f {DATA_FOLDER}/*.csv')
         now = self.printer.get_reactor().monotonic()
         kin_status = self.toolhead.get_kinematics().get_status(now)
-        self.center_x = (int(self.config.getsection('stepper_x').get('position_max'))
-                         - int(self.config.getsection('stepper_x').get('position_min'))) / 2
-        self.center_y = (int(self.config.getsection('stepper_y').get('position_max'))
-                         - int(self.config.getsection('stepper_y').get('position_min'))) / 2
+        self.center_x = math.floor((float(self.config.getsection('stepper_x').get('position_max'))
+                            - float(self.config.getsection('stepper_x').get('position_min'))) / 2)
+        self.center_y = math.floor((float(self.config.getsection('stepper_y').get('position_max'))
+                            - float(self.config.getsection('stepper_y').get('position_min'))) / 2)
         if 'xy' not in kin_status['homed_axes']:
             self._send('G28 X Y')
         self.toolhead.manual_move([self.center_x,self.center_y , None], self.travel_speed)
