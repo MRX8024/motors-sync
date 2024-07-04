@@ -44,6 +44,17 @@ class MotorsSync:
         self.toolhead = self.printer.lookup_object('toolhead')
         self.travel_speed = self.toolhead.max_velocity / 2
 
+    def lookup_config(self, section, section_entries, force_back='empty'):
+        out = []
+        section = self.config.getsection(section)
+        for value in section_entries:
+            try:
+                out.append(float(section.get(value, force_back)))
+            except:
+                out.append(section.get(value, force_back))
+        if 'empty' in out: raise
+        return out[0] if len(out) == 1 else out
+
     def _get_chip(self):
         try:
             return self.config.get('accel_chip')
@@ -128,16 +139,18 @@ class MotorsSync:
         return self._calc_magnitude()
 
     def _prestart(self):
+        # Make clean, homing and going to center
         os.system(f'rm -f {DATA_FOLDER}/*.csv')
         now = self.printer.get_reactor().monotonic()
         kin_status = self.toolhead.get_kinematics().get_status(now)
-        self.center_x = (int(self.config.getsection('stepper_x').get('position_max'))
-                         - int(self.config.getsection('stepper_x').get('position_min'))) / 2
-        self.center_y = (int(self.config.getsection('stepper_y').get('position_max'))
-                         - int(self.config.getsection('stepper_y').get('position_min'))) / 2
-        if 'xy' not in kin_status['homed_axes']:
-            self._send('G28 X Y')
-        self.toolhead.manual_move([self.center_x,self.center_y , None], self.travel_speed)
+        center = []
+        for axis in self.axes:
+            stepper = 'stepper_' + axis.lower()
+            min, max = self.lookup_config(stepper, ['position_min', 'position_max'], 0)
+            center.append(min + ((max - min) / 2))
+        if ''.join(self.axes).lower() not in kin_status['homed_axes']:
+            self._send(f"G28 {' '.join(self.axes).upper()}")
+        self.toolhead.manual_move([center[0], center[1], None], self.travel_speed)
         self.toolhead.wait_moves()
 
     def _axes_level(self):
