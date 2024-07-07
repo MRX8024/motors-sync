@@ -7,11 +7,7 @@ import os, logging, time, itertools
 import numpy as np
 from . import z_tilt
 
-DATA_FOLDER = '/tmp'        # Folder where csv are generate
 MEASURE_DELAY = 0.25        # Delay between damped oscillations and measurement
-CSV_DELAY = 0.10            # Delay between checks csv in /tmp in sec
-CSV_OPEN_DELAY = 0.10       # Delay between open csv in sec
-EXIT_TIMER = 5.00           # Exit program time in sec if no file
 AXES_LEVEL_DELTA = 2000     # Magnitude difference between axes
 MEDIAN_FILTER_WINDOW = 3    # Number of window lines
 
@@ -72,31 +68,17 @@ class MotorsSync:
 
     def _static_measure(self):
         # Measure static vibrations
-        self._send(f'ACCELEROMETER_MEASURE CHIP={self.accel_chip} NAME=stand_still')
-        time.sleep(0.25)
-        self._send(f'ACCELEROMETER_MEASURE CHIP={self.accel_chip} NAME=stand_still')
-        # Init CSV file
-        file = self._wait_csv('stand_still.csv')
-        vect = np.mean(np.genfromtxt(file, delimiter=',', skip_header=1, usecols=(1, 2, 3)), axis=0)
-        os.remove(file)
+        aclient = self.chip_config.start_internal_client()
+        time.sleep(0.250)
+        aclient.finish_measurements()
+        # Init data
+        vect = np.mean(np.array([
+            [sample.accel_x,sample.accel_y,sample.accel_z]
+            for sample in aclient.get_samples()]), axis=0)
         # Calculate static and find z axis for future exclude
         self.z_axis = np.abs(vect[0:]).argmax()
         xy_vect = np.delete(vect, self.z_axis, axis=0)
         self.static_data = round(np.linalg.norm(xy_vect, axis=0), 2)
-
-    def _wait_csv(self, name):
-        # Wait csv data file in data folder
-        timer = 0
-        while True:
-            time.sleep(CSV_DELAY)
-            timer += 1
-            for f in os.listdir(DATA_FOLDER):
-                if f.endswith(name):
-                    time.sleep(CSV_OPEN_DELAY)
-                    return os.path.join(DATA_FOLDER, f)
-                elif timer > EXIT_TIMER / CSV_DELAY:
-                    raise self.gcode.error(f'No CSV files found in the directory, aborting')
-                else: continue
 
     def _buzz(self, stepper):
         # Fading oscillations
@@ -108,37 +90,33 @@ class MotorsSync:
             self._stepper_move(lookup_sec_stepper, -dist)
         self._stepper_switch(stepper, 1)
 
-    def _calc_magnitude(self):
-        try:
-            # Init CSV file
-            file = self._wait_csv('.csv')
-            vect = np.genfromtxt(file, delimiter=',', skip_header=1, usecols=(1, 2, 3))
-            os.remove(file)
-            xy_vect = np.delete(vect, self.z_axis, axis=1)
-            # Add window mean filter
-            magnitude = []
-            for i in range(int(MEDIAN_FILTER_WINDOW / 2), len(xy_vect) - int(MEDIAN_FILTER_WINDOW / 2)):
-                filtered_xy_vect = (np.median([xy_vect[i-int(MEDIAN_FILTER_WINDOW / 2)],
-                                    xy_vect[i], xy_vect[i+int(MEDIAN_FILTER_WINDOW / 2)]], axis=0))
-                magnitude.append(np.linalg.norm(filtered_xy_vect))
-            # Return avg of 5 max magnitudes with deduction static
-            magnitude = np.mean(np.sort(magnitude)[-5:])
-            return round(magnitude - self.static_data, 2)
-        except Exception as e:
-            self.gcode.error(f"Error processing generated CSV: {str(e)}")
+    def _calc_magnitude(self, aclient):
+        # Calculate impact magnitude
+        vect = np.array([[sample.accel_x, sample.accel_y, sample.accel_z]
+                         for sample in aclient.get_samples()])
+        xy_vect = np.delete(vect, self.z_axis, axis=1)
+        # Add window mean filter
+        magnitude = []
+        for i in range(int(MEDIAN_FILTER_WINDOW / 2), len(xy_vect) - int(MEDIAN_FILTER_WINDOW / 2)):
+            filtered_xy_vect = (np.median([xy_vect[i-int(MEDIAN_FILTER_WINDOW / 2)],
+                                xy_vect[i], xy_vect[i+int(MEDIAN_FILTER_WINDOW / 2)]], axis=0))
+            magnitude.append(np.linalg.norm(filtered_xy_vect))
+        # Return avg of 5 max magnitudes with deduction static
+        magnitude = np.mean(np.sort(magnitude)[-5:])
+        return round(magnitude - self.static_data, 2)
 
     def _measure(self, stepper, buzz=True):
+        # Measure the impact
         if buzz: self._buzz(stepper)
         self._stepper_switch(stepper, 0)
         time.sleep(MEASURE_DELAY)
-        self._send(f'ACCELEROMETER_MEASURE CHIP={self.accel_chip}')
+        aclient = self.chip_config.start_internal_client()
         self._stepper_switch(stepper, 1)
-        self._send(f'ACCELEROMETER_MEASURE CHIP={self.accel_chip}')
-        return self._calc_magnitude()
+        aclient.finish_measurements()
+        return self._calc_magnitude(aclient)
 
     def _prestart(self):
-        # Make clean, homing and going to center
-        os.system(f'rm -f {DATA_FOLDER}/*.csv')
+        # Homing and going to center
         now = self.printer.get_reactor().monotonic()
         kin_status = self.toolhead.get_kinematics().get_status(now)
         center = []
@@ -257,7 +235,8 @@ class MotorsSync:
         self.axes = ['x', 'y']
         self.status.reset()
         # Live variables
-        self.accel_chip = gcmd.get('ACCEL_CHIP', self.accel_chip)
+        accel_chip = gcmd.get('ACCEL_CHIP', self.accel_chip)
+        self.chip_config = self.printer.lookup_object(accel_chip)
         self.steps_coeff = gcmd.get_int('STEPS_COEFF', self.steps_coeff, minval=5000, maxval=999999)
         self.fast_threshold = gcmd.get_int('FAST_THRESHOLD', self.fast_threshold, minval=0, maxval=999999)
         self.retry_tolerance = gcmd.get_int('RETRY_TOLERANCE', self.retry_tolerance, minval=0, maxval=999999)
