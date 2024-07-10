@@ -165,7 +165,7 @@ class MotorsSync:
                         self.gcode.respond_info(
                             f"Retries: {self.motion['retries']}/{self.max_retries} Data in loop is incorrect! ")
                         m['move_dir'][1] = 0
-                        break
+                        continue
                     force_exit = True
                 delta = round(m['new_magnitude'] - init_min_magnitude, 2)
                 if delta < AXES_LEVEL_DELTA or m['new_magnitude'] < init_min_magnitude or force_exit:
