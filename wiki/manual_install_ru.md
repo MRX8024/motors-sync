@@ -1,12 +1,10 @@
-1. Скачайте репозиторий - `sudo git clone https://github.com/MRX8024/motors-sync`
+1. Скачайте репозиторий - `git clone https://github.com/MRX8024/motors-sync`
 2. Создайте ссылку к программе - `ln -sf ~/motors-sync/motors_sync.py ~/klipper/klippy/extras/`
 3. Установите пакеты -
 
     ``` sudo apt-get install libatlas-base-dev libopenblas-dev ```
 
-    ``` sudo pip install numpy matplotlib ```
-
-    ``` ~/klippy-env/bin/pip install -v numpy ```
+    ``` ~/klippy-env/bin/pip install numpy matplotlib ```
 
 
 4. Добавьте в конфигурацию принтера строки - 

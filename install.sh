@@ -1,6 +1,6 @@
 #!/bin/bash
 repo=motors-sync
-repo_path=~/motors-sync/
+repo_path="$(cd "$(dirname "$0")" && pwd)"
 
 # Сворачивание от root
 if [ "$(id -u)" = "0" ]; then
@@ -40,7 +40,6 @@ if [ -f "$blk_path" ]; then
           sed -i "\$a path: $repo_path" "$blk_path"
           sed -i "\$a origin: https://github.com/MRX8024/$repo.git" "$blk_path"
           sed -i "\$a primary_branch: main" "$blk_path"
-          sed -i "\$a is_system_service: False" "$blk_path"
           sed -i "\$a managed_services: klipper" "$blk_path"
           # echo "Including [update_manager] to $blk_path successfully complete"
           sudo service moonraker start
@@ -53,5 +52,5 @@ if [ -f "$blk_path" ]; then
 fi
 
 sudo apt update
-sudo apt install python3-numpy python3-matplotlib libatlas-base-dev libopenblas-dev
+sudo apt install libatlas-base-dev libopenblas-dev
 sudo ~/klippy-env/bin/pip install -r "$repo_path/"wiki/requirements.txt

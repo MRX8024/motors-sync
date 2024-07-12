@@ -1,4 +1,5 @@
 ### 1. Install the calibration script on the printer host. (the klipper will reboot!)
+
 ```
 cd ~
 git clone https://github.com/MRX8024/motors-sync
@@ -15,18 +16,19 @@ bash ~/motors-sync/install.sh
 #microsteps: 16
 #    Maximum microstepping of stepper motor rotor displacement, not worth
 #    increase the value above 16, do so at your own peril and risk.
-#steps_threshold:
+#steps_coeff: 999999 (deprecated steps_threshold)
 #    Coefficient of number of microsteps of shaft displacement, depending 
 #    on the magnitude value (impact), adjusted experimentally. Let's say
-#    if our strike was 50,000 units, and the coefficient was 10,000 - the
-#    motor will move in 5 microsteps to save time.
-#fast_threshold:
+#    if our impact was 50,000 units, and the coeff was 10,000 - the motor
+#    will move in 5 microsteps at a time to save time.
+#fast_threshold: 999999
 #    Threshold up to which the motor will not perform decaying oscillations,
-#    to save time, due to the already high deviations.
-#retry_tolerance:
-#    Forced threshold to which the stepper motor will have to lower
-#    deviations by repeating the measurement procedure n number of times,
-#    described by the next parameter.
+#    to save time, due to the already high deviations. Be very be careful
+#    when decreasing the value of this parameter.
+#retry_tolerance: 999999
+#    Forced threshold to which a pair of stepper motors should will omit
+#    deviations. After several runs calibration, you will find the limit 
+#    to which you can lower this parameter.
 #retries: 0
 #    Maximum number of repetitions to achieve forced motor synchronization
 #    deviation threshold.
@@ -40,24 +42,45 @@ bash ~/motors-sync/install.sh
    web interface, and wait for the process to complete.
    
    Some parameters can be overridden:
+
+   SYNC_MOTORS [ACCEL_CHIP=<chip_name>] [STEPS_COEFF=<value>]
+   [FAST_THRESHOLD=<value>] [RETRY_TOLERANCE=<value>] [RETRIES=<value>]
+
    ```
-   SYNC_MOTORS [STEPS_THRESHOLD=<value>] [FAST_THRESHOLD=<value>]
-   [RETRY_TOLERANCE=<value>] [RETRIES=<value>]
-   ```
+   For the convenience of additional parameter settings, you can add macro
+   from `motors_sync.cfg` to get physical functions\cells in the interface.
+
 
 5. Notes:
    1. Do not turn on the hotend heating during synchronization.
-      A running fan may prevent correct and more accurate measurements.
-   2. The more the motors are out of sync, the longer the synchronization takes,
-      but the speed is adjusted by the `steps_threshold` parameter, adjust it wisely.
-   3. Synchronization can be started at the beginning of printing while the bed is
-      heating up. To do this, you need to add it to the macro \ slicer. For example -
+      A running fan (basically any fan in the printer) may prevent correct
+      and more accurate measurements. But if it has to be turned on, try
+      not to let it turn off in the middle of measurements. You can compare
+      noises with the command - `MEASURE_AXES_NOISE`
+
+
+6. Synchronization can be started at the beginning of printing
+   while the bed is heating up. To do this, you need to add it 
+   to the macro \ slicer. For example -
 ```
 M140 S   ;set bed temp
 SYNC_MOTORS
-G28
+G28 Z
 M190 S   ; wait for bed temp to stabilize
 M104 S   ;set extruder temp
 BED_MESH_CALIBRATE
+...
+```
+7. A variable of status is also introduced, which is reset when the printer
+   motors are turned off. You can check its status inside the macro, and do
+   not do calibration again, if it has already been done in the current
+   session. For example -
+```
+...
+G28 X Y
+{% if not printer.motors_sync.applied %}
+    SYNC_MOTORS
+{% endif %}
+G28 Z
 ...
 ```
