@@ -8,7 +8,7 @@ import os, logging, time, itertools
 import numpy as np
 from . import z_tilt
 
-MEASURE_DELAY = 0.25        # Delay between damped oscillations and measurement
+# MEASURE_DELAY = 0.25        # Delay between damped oscillations and measurement
 MAX_STEP_SIZE = 5           # Maximum number of microsteps move at a time
 AXES_LEVEL_DELTA = 2000     # Magnitude difference between axes
 MEDIAN_FILTER_WINDOW = 3    # Number of window lines
@@ -80,7 +80,7 @@ class MotorsSync:
                   'sextic', 'septimic', 'octic', 'nonic', 'decic']
         model = self.config.get('model', 'linear').lower()
         coeffs = [chr(97 + i) for i in range(len(pol_models) + 1)]
-        coeffs_val = [float(arg) for arg in self.config.get('model_coeffs', '5000, 0').split(',')]
+        coeffs_val = [float(arg) for arg in self.config.get('model_coeffs', '20000, 0').split(',')]
         extra_model = self.config.get('extra_model', '').lower()
         extra_coeffs_val = [float(arg) for arg in self.config.get('extra_model_coeffs', '0').split(',')]
         model_coeffs = {arg: float(val) for arg, val in zip(coeffs, coeffs_val)}
@@ -350,11 +350,12 @@ class MotorsSync:
             self.gcode.respond_info(f"{params['out_msg']}\n")
 
     def cmd_CALIBRATE_SYNC(self, gcmd):
-        #
+        # Calibrate sync model and model coeffs
         from .plot import find_func
         import multiprocessing
-        repeats = gcmd.get_int('REPEATS', 5, minval=1, maxval=100)
-        peak_point = gcmd.get_int('PEAK_POINT', 60000, minval=10000, maxval=999999)
+        repeats = gcmd.get_int('REPEATS', 10, minval=1, maxval=100)
+        peak_point = gcmd.get_int('PEAK_POINT', 50000, minval=10000, maxval=999999)
+        # peak_point maxval - ? ~move_len * 6000000
         self.gcode.respond_info('Synchronizing before calibration')
         self.cmd_RUN_SYNC(gcmd)
         axis = self.axes[0]
