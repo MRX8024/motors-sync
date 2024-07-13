@@ -2,19 +2,22 @@
 repo=motors-sync
 repo_path="$(cd "$(dirname "$0")" && pwd)"
 
-# Сворачивание от root
+# Exit if root
 if [ "$(id -u)" = "0" ]; then
     echo "Script must run from non-root !!!"
     exit
 fi
 
 module_name=motors_sync.py
+plot_name=motors_sync_plot.py
 module_path=~/klipper/klippy/extras/
 cfg_incl_path=~/printer_data/config/printer.cfg
 
-ln -sf "$repo_path/$module_name" $module_path # Перезапись
+# Linking
+ln -sf "$repo_path/$module_name" $module_path
+ln -sf "$repo_path/$plot_name" $plot_name
 
-# Добавление строки [force_move] в printer.cfg
+# Include [force_move] in printer.cfg
 if [ -f "$cfg_incl_path" ]; then
     if ! grep -q "^\[force_move\]$" "$cfg_incl_path"; then
         sudo service klipper stop
@@ -28,7 +31,7 @@ if [ -f "$cfg_incl_path" ]; then
 fi
 
 blk_path=~/printer_data/config/moonraker.conf
-# Добавление блока обновления в moonraker.conf
+# Include update block in moonraker.conf
 if [ -f "$blk_path" ]; then
     if ! grep -q "^\[update_manager $repo\]$" "$blk_path"; then
         read -p " Do you want to install updater? (y/n): " answer
@@ -39,7 +42,7 @@ if [ -f "$blk_path" ]; then
           sed -i "\$a type: git_repo" "$blk_path"
           sed -i "\$a path: $repo_path" "$blk_path"
           sed -i "\$a origin: https://github.com/MRX8024/$repo.git" "$blk_path"
-          sed -i "\$a primary_branch: main" "$blk_path"
+          sed -i "\$a primary_branch: dev" "$blk_path"
           sed -i "\$a managed_services: klipper" "$blk_path"
           # echo "Including [update_manager] to $blk_path successfully complete"
           sudo service moonraker start
