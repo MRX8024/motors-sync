@@ -15,7 +15,7 @@ cfg_incl_path=~/printer_data/config/printer.cfg
 
 # Linking
 ln -sf "$repo_path/$module_name" $module_path
-ln -sf "$repo_path/$plot_name" $plot_name
+ln -sf "$repo_path/$plot_name" $module_path
 
 # Include [force_move] in printer.cfg
 if [ -f "$cfg_incl_path" ]; then
