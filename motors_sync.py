@@ -21,7 +21,6 @@ class MotorsSync:
         self.gcode_move = self.printer.load_object(config, 'gcode_move')
         self.force_move = self.printer.load_object(config, 'force_move')
         self.stepper_en = self.printer.load_object(config, 'stepper_enable')
-        self.homing = self.printer.load_object(config, 'homing_override')
         self.printer.register_event_handler("klippy:connect", self.handler)
         self.status = z_tilt.ZAdjustStatus(self.printer)
         # Read config
@@ -65,10 +64,10 @@ class MotorsSync:
         kin = self.lookup_config('printer', ['kinematics'])
         if kin == 'corexy':
             do_level = True
-            axes = list(a.upper() for a in self.config.getlist('axes', count=2, default=['x', 'y']))
+            axes = [a.upper() for a in self.config.getlist('axes', count=2, default=['x', 'y'])]
         elif kin == 'cartesian':
             do_level = False
-            axes = [(a.upper() for a in self.config.get('axes').split(','))]
+            axes = [a.upper() for a in self.config.getlist('axes')]
         else:
             raise self.config.error(f"Not supported kinematics '{kin}'")
         if any([axis not in valid_axes for axis in axes]):
@@ -197,14 +196,14 @@ class MotorsSync:
         # Homing and going to center
         now = self.printer.get_reactor().monotonic()
         kin_status = self.toolhead.get_kinematics().get_status(now)
-        center = []
+        center = {}
         for axis in self.axes:
             stepper = 'stepper_' + axis.lower()
             min_pos, max_pos = self.lookup_config(stepper, ['position_min', 'position_max'], 0)
-            center.append(min_pos + ((max_pos - min_pos) / 2))
+            center[axis] = min_pos + (max_pos - min_pos) / 2
         if ''.join(self.axes).lower() not in kin_status['homed_axes']:
             self._send(f"G28 {' '.join(self.axes)}")
-        self.toolhead.manual_move([center[0], center[1], None], self.travel_speed)
+        self._send(f"G0 {' '.join(f'{axis}{pos}' for axis, pos in center.items())}")
         self.toolhead.wait_moves()
 
     def _detect_move_dir(self, axis):
@@ -267,7 +266,6 @@ class MotorsSync:
                 continue
 
     def _final_sync(self, max_ax):
-        self.gcode.respond_info(str('Final sync'))
         # Axes calibration to zero magnitude
         axes = self.axes[::-1] if max_ax == self.axes[0] else self.axes
         for axis in itertools.cycle(axes):
@@ -351,7 +349,7 @@ class MotorsSync:
 
     def cmd_CALIBRATE_SYNC(self, gcmd):
         # Calibrate sync model and model coeffs
-        from .plot import find_func
+        from .motors_sync_plot import find_func
         import multiprocessing
         repeats = gcmd.get_int('REPEATS', 10, minval=1, maxval=100)
         peak_point = gcmd.get_int('PEAK_POINT', 50000, minval=10000, maxval=999999)
