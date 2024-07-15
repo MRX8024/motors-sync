@@ -32,8 +32,8 @@ class MotorsSync:
         # Register commands
         self.gcode.register_command('SYNC_MOTORS', self.cmd_RUN_SYNC, desc='Start 4WD synchronization')
         # Variables
-        rotation_distance = int(self.config.getsection('stepper_x').get('rotation_distance'))
-        steps_per_rotation = int(self.config.getsection('stepper_x').get('full_steps_per_rotation', 200))
+        rotation_distance = int(round(self.config.getsection('stepper_x').getfloat('rotation_distance')))
+        steps_per_rotation = int(self.config.getsection('stepper_x').getint('full_steps_per_rotation', 200))
         self.move_len = rotation_distance / steps_per_rotation / self.microsteps
 
     def handler(self):
