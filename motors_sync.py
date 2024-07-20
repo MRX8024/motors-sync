@@ -1,4 +1,3 @@
-
 # Motors synchronization script
 #
 # Copyright (C) 2024  Maksim Bolgov <maksim8024@gmail.com>
@@ -8,7 +7,7 @@ import os, logging, time, itertools
 import numpy as np
 from . import z_tilt
 
-# MEASURE_DELAY = 0.25        # Delay between damped oscillations and measurement
+MEASURE_DELAY = 0.05        # Delay between damped oscillations and measurement
 AXES_LEVEL_DELTA = 2000     # Magnitude difference between axes
 MEDIAN_FILTER_WINDOW = 3    # Number of window lines
 
@@ -176,10 +175,9 @@ class MotorsSync:
         self._stepper_switch(stepper, 1)
         self._stepper_switch(stepper, 0)
         aclient = self.motion[axis]['chip_config'].start_internal_client()
-        # time.sleep(0.250)
-        self.toolhead.dwell(0.05)
+        self.toolhead.dwell(MEASURE_DELAY)
         self._stepper_switch(stepper, 1)
-        self.toolhead.dwell(0.05)
+        self.toolhead.dwell(MEASURE_DELAY)
         aclient.finish_measurements()
         return self._calc_magnitude(aclient)
 
@@ -358,10 +356,10 @@ class MotorsSync:
                     raise self.gcode.error(f'Error generate path {path}: {e}')
 
         def linear_model(x, a, b):
-            return a * x + b
+            return a*x + b
 
         def quadratic_model(x, a, b, c):
-            return a * x ** 2 + b * x + c
+            return a*x**2 + b*x + c
 
         def power_model(x, a, b):
             return a * np.power(x, b)
@@ -429,8 +427,8 @@ class MotorsSync:
             ax.scatter(x_data, y_data, label='Samples', color='red', zorder=2, s=10)
             x_fit = np.linspace(min(x_data), max(x_data), 200)
             for num, name in enumerate(sorted_out):
-                if out[name]["val"] < RMSE_LIMIT:
-                    string_graph = f'{name} RMSE: {out[name]["val"]:.0f}'
+                if out[name]['val'] < RMSE_LIMIT:
+                    string_graph = f"{name} RMSE: {out[name]['val']:.0f}"
                     linestyle = linestyles[name]
                     linewidth = 1
                     color = colors[name]
@@ -456,14 +454,13 @@ class MotorsSync:
             return f'Access to interactive plot at: {png_path}'
 
         repeats = gcmd.get_int('REPEATS', 10, minval=1, maxval=100)
-        peak_point = gcmd.get_int('PEAK_POINT', 50000, minval=10000, maxval=999999)
-        # peak_point maxval - ? ~move_len * 6000000
         self.gcode.respond_info('Synchronizing before calibration')
         self.cmd_RUN_SYNC(gcmd)
         axis = self.axes[0]
         m = self.motion[axis]
         min_pos, max_pos, rd = self.lookup_config(
             m['stepper'], ['position_min', 'position_max', 'rotation_distance'], 0)
+        peak_point = gcmd.get_int('PEAK_POINT', rd * 1250, minval=10000, maxval=999999)
         center = min_pos + ((max_pos - min_pos) / 2)
         pos = itertools.cycle([center - rd, center, center + rd])
         max_steps = 0
