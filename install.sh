@@ -2,7 +2,7 @@
 repo=motors-sync
 repo_path="$(cd "$(dirname "$0")" && pwd)"
 
-# Сворачивание от root
+# Exit if root
 if [ "$(id -u)" = "0" ]; then
     echo "Script must run from non-root !!!"
     exit
@@ -12,9 +12,10 @@ module_name=motors_sync.py
 module_path=~/klipper/klippy/extras/
 cfg_incl_path=~/printer_data/config/printer.cfg
 
-ln -sf "$repo_path/$module_name" $module_path # Перезапись
+# Linking
+ln -sf "$repo_path/$module_name" $module_path
 
-# Добавление строки [force_move] в printer.cfg
+# Include [force_move] in printer.cfg
 if [ -f "$cfg_incl_path" ]; then
     if ! grep -q "^\[force_move\]$" "$cfg_incl_path"; then
         sudo service klipper stop
@@ -28,7 +29,7 @@ if [ -f "$cfg_incl_path" ]; then
 fi
 
 blk_path=~/printer_data/config/moonraker.conf
-# Добавление блока обновления в moonraker.conf
+# Include update block in moonraker.conf
 if [ -f "$blk_path" ]; then
     if ! grep -q "^\[update_manager $repo\]$" "$blk_path"; then
         read -p " Do you want to install updater? (y/n): " answer

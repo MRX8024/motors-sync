@@ -2,9 +2,9 @@
 2. Создайте ссылку к программе - `ln -sf ~/motors-sync/motors_sync.py ~/klipper/klippy/extras/`
 3. Установите пакеты -
 
-    ``` sudo apt-get install libatlas-base-dev libopenblas-dev ```
+    ```sudo apt-get install libatlas-base-dev libopenblas-dev```
 
-    ``` ~/klippy-env/bin/pip install numpy matplotlib ```
+    ```~/klippy-env/bin/pip install numpy matplotlib scipy```
 
 
 4. Добавьте в конфигурацию принтера строки - 
