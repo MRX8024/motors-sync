@@ -122,9 +122,10 @@ also be redefined:
 SYNC_MOTORS_CALIBRATE [PEAK_POINT=<value>] [REPEATS=<value>]
 ```
 By default, the calibration will perform 10 iterations of 
-increasing/decreasing magnitude in the range from ~0 to 50K. After it is
-completed, you will see in the terminal the path to the graphic image, as
-well as the model. Open the file and see something like the following -
+increasing/decreasing magnitude in the range from `~0` to 
+`rotation_distance * 1250`. After it is completed, you will see in the
+terminal the path to the graphic image, as well as the model. Open the
+file and see something like the following -
 
 ![](/wiki/pictures/img_1.png)
 
