@@ -192,7 +192,7 @@ class MotorsSync:
             center[axis] = min_pos + (max_pos - min_pos) / 2
         if ''.join(self.axes).lower() not in kin_status['homed_axes']:
             self._send(f"G28 {' '.join(self.axes)}")
-        self._send(f"G0 {' '.join(f'{axis}{pos}' for axis, pos in center.items())}")
+        self._send(f"G0 {' '.join(f'{axis}{pos}'for axis, pos in center.items())} F{self.travel_speed * 60}")
         self.toolhead.wait_moves()
 
     def _detect_move_dir(self, axis):
