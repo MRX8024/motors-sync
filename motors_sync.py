@@ -505,9 +505,9 @@ class MotorsSync:
                 os.nice(20)
             except:
                 pass
-        msg = find_best_func(x_samples, y_samples, self.accel_chips[axis], self.microsteps)
-        for line in msg:
-            self.gcode.respond_info(str(line))
+            msg = find_best_func(x_samples, y_samples, self.accel_chips[axis], self.microsteps)
+            for line in msg:
+                self.gcode.respond_info(str(line))
 
         # Run plotter
         proces = multiprocessing.Process(target=_samples_processing())
