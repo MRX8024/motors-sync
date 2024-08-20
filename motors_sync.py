@@ -202,8 +202,8 @@ class MotorsSync:
         m['actual_msteps'] += m['move_msteps']
         m['new_magnitude'] = self._measure(axis, True)
         self.gcode.respond_info(f"{axis}-New magnitude: {m['new_magnitude']} "
-                                f"on {m['move_dir'][0] * m['move_msteps']}/{self.microsteps} step move")
-        m['move_dir'] = [-1, 'Backward'] if (m['new_magnitude'] > m['magnitude']) else [1, 'Forward']
+                                f"on {m['move_msteps']}/{self.microsteps} step move")
+        m['move_dir'] = [-1, 'Backward'] if m['new_magnitude'] > m['magnitude'] else [1, 'Forward']
         self.gcode.respond_info(f"{axis}-Movement direction: {m['move_dir'][1]}")
         m['magnitude'] = m['new_magnitude']
 
