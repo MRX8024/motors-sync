@@ -48,7 +48,7 @@ accel_chip_y:
 #model: linear
 #    Модель зависимости смещения микрошагов на валу шагового двигателя
 #    от величины измеренных колебаний. Поддерживаемые модели: linear,
-#    quadratic, cubic, power, root, hyperbolic, exponential.
+#    quadratic, power, root, hyperbolic, exponential.
 #model_coeffs: 20000, 0
 #    Коэффициенты выше описанной модели, для рассчета микрошагов.
 #max_step_size: 5

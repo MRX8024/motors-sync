@@ -49,7 +49,7 @@ accel_chip_y:
 #model: linear
 #    Model of the dependence of the displacement of microsteps on the
 #    shaft of a stepper motor depends on the magnitude of the measured
-#    oscillations. Supported models: linear, quadratic, cubic, power, root,
+#    oscillations. Supported models: linear, quadratic, power, root,
 #    hyperbolic, exponential.
 #model_coeffs: 20000, 0
 #    Coefficients above the described model, for calculating microsteps.
