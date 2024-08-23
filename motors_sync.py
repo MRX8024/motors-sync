@@ -25,7 +25,7 @@ class MotorsSync:
         self.axes, self.do_level = self._init_axes()
         self.accel_chips = self._init_chips()
         self.microsteps = self.config.getint('microsteps', default=16, minval=2, maxval=32)
-        self.solve_model, self.model_coeffs, self.extra_solve_model, self.extra_model_coeffs = self._init_model()
+        self.solve_model, self.model_coeffs = self._init_model()
         self.max_step_size = self.config.getint('max_step_size', default=5, minval=1, maxval=self.microsteps)
         self.retry_tolerance = self.config.getint('retry_tolerance', default=999999, minval=0, maxval=999999)
         self.max_retries = self.config.getint('retries', default=0, minval=0, maxval=10)
@@ -73,44 +73,31 @@ class MotorsSync:
         return chips
 
     def _init_model(self):
-        pol_models = ['linear', 'quadratic', 'cubic', 'quartic', 'quintic',
-                  'sextic', 'septimic', 'octic', 'nonic', 'decic']
         model = self.config.get('model', 'linear').lower()
-        coeffs = [chr(97 + i) for i in range(len(pol_models) + 1)]
-        coeffs_val = [float(arg) for arg in self.config.get('model_coeffs', '20000, 0').split(',')]
-        extra_model = self.config.get('extra_model', '').lower()
-        extra_coeffs_val = [float(arg) for arg in self.config.get('extra_model_coeffs', '0').split(',')]
-        model_coeffs = {arg: float(val) for arg, val in zip(coeffs, coeffs_val)}
-        supp_models = {
+        coeffs_vals = self.config.getlist('model_coeffs', default=[20000, 0])
+        coeffs_args = [chr(97 + i) for i in range(len(coeffs_vals) + 1)]
+        model_coeffs = {arg: float(val) for arg, val in zip(coeffs_args, coeffs_vals)}
+        models = {
+            'linear': {'args': {'count': 2, 'a': None}, 'func': self.polynomial_model},
+            'quadratic': {'args': {'count': 3, 'a': None}, 'func': self.polynomial_model},
             'power': {'args': {'count': 2, 'a': None}, 'func': self.power_model},
             'root': {'args': {'count': 2, 'a': 0}, 'func': self.root_model},
             'hyperbolic': {'args': {'count': 2, 'a': 0}, 'func': self.hyperbolic_model},
             'exponential': {'args': {'count': 3, 'a': 0}, 'func': self.exponential_model}
         }
-        for i, name in enumerate(pol_models, 2):
-            supp_models[name] = {'args': {'count': i, 'a': None}, 'func': self.polynomial_model}
-        if model in supp_models:
-            config = supp_models[model]
-            if len(model_coeffs) == config['args']['count']:
-                if config['args']['a'] == model_coeffs['a']:
-                    raise self.config.error(f"Coefficient 'a' cannot be zero for a {model} model")
-                return config['func'], list(model_coeffs.values()), extra_model, extra_coeffs_val
-            else:
-                raise self.config.error(f"{model.capitalize()}"
-                                        f" model requires {config['args']['count']} coefficients")
-        else:
-            raise self.config.error(f"Invalid model '{model}'")
+        if model in models:
+            if len(model_coeffs) == models[model]['args']['count']:
+                if models[model]['args']['a'] != model_coeffs['a']:
+                    return models[model]['func'], list(model_coeffs.values())
+                raise self.config.error(f"Coefficient 'a' cannot be "
+                                        f"{model_coeffs['a']} for a {model} model")
+            raise self.config.error(f"{model.capitalize()} model requires "
+                                    f"{models[model]['args']['count']} coefficients")
+        raise self.config.error(f"Invalid model '{model}'")
 
     def polynomial_model(self, fx):
-        if self.extra_solve_model:
-            extra_sol = np.roots([*self.extra_model_coeffs[:-1],
-                                  self.extra_model_coeffs[-1] - fx])
-            sol = np.roots([*self.model_coeffs[:-1], self.model_coeffs[-1] - fx])
-            closest = min(sol.real, key=lambda y: abs(y - max(extra_sol)))
-            return closest
-        else:
-            sol = np.roots([*self.model_coeffs[:-1], self.model_coeffs[-1] - fx])
-            return max(sol.real)
+        sol = np.roots([*self.model_coeffs[:-1], self.model_coeffs[-1] - fx])
+        return max(sol.real)
 
     def power_model(self, fx):
         a, b = self.model_coeffs
@@ -156,7 +143,7 @@ class MotorsSync:
         z_axis = np.abs(cut).argmax()
         static = np.linalg.norm(cut[np.arange(3) != z_axis])
         xy_vect = np.delete(vect, z_axis, axis=1)
-        # Add window mean filter
+        # Add window median filter
         half_window = MEDIAN_FILTER_WINDOW // 2
         magnitudes = np.linalg.norm(np.array(np.median(
             [xy_vect[i - half_window:i + half_window + 1]
