@@ -25,7 +25,7 @@ class MotorsSync:
         self.axes, self.do_level = self._init_axes()
         self.accel_chips = self._init_chips()
         self.microsteps = self.config.getint('microsteps', default=16, minval=2, maxval=32)
-        self.solve_model, self.model_coeffs = self._init_model()
+        self.solve_models = self._init_models()
         self.max_step_size = self.config.getint('max_step_size', default=5, minval=1, maxval=self.microsteps)
         self.retry_tolerance = self.config.getint('retry_tolerance', default=999999, minval=0, maxval=999999)
         self.max_retries = self.config.getint('retries', default=0, minval=0, maxval=10)
@@ -41,6 +41,7 @@ class MotorsSync:
         self.travel_accel = min(self.toolhead.max_accel, 5000)
 
     def lookup_config(self, section, section_entries, force_back=None):
+        # Loockup in printer config
         out = []
         section = self.config.getsection(section)
         for value in section_entries:
@@ -53,15 +54,15 @@ class MotorsSync:
 
     def _init_axes(self):
         valid_axes = ['X', 'Y']
-        kin = self.lookup_config('printer', ['kinematics'])
-        if kin == 'corexy':
+        self.kin = self.lookup_config('printer', ['kinematics'])
+        if self.kin == 'corexy':
             do_level = True
             axes = [a.upper() for a in self.config.getlist('axes', count=2, default=['x', 'y'])]
-        elif kin == 'cartesian':
+        elif self.kin == 'cartesian':
             do_level = False
             axes = [a.upper() for a in self.config.getlist('axes')]
         else:
-            raise self.config.error(f"Not supported kinematics '{kin}'")
+            raise self.config.error(f"Not supported kinematics '{self.kin}'")
         if any([axis not in valid_axes for axis in axes]):
             raise self.config.error('Invalid axes parameter')
         return axes, do_level
@@ -69,14 +70,19 @@ class MotorsSync:
     def _init_chips(self):
         chips = {}
         for axis in self.axes:
-            chips[axis] = self.config.get(f'accel_chip_{axis.lower()}')
+            try:
+                chips[axis] = self.config.get(f'accel_chip_{axis.lower()}')
+            except:
+                chips[axis] = self.config.get('accel_chip')
+        if self.kin in ['corexy']:
+            list_chips = list(chips.values())
+            if not all(chip == list_chips[0] for chip in list_chips):
+                raise self.config.error(f"Accel chips cannot be different "
+                                        f"for a '{self.kin}' kinematics")
         return chips
 
-    def _init_model(self):
-        model = self.config.get('model', 'linear').lower()
-        coeffs_vals = self.config.getlist('model_coeffs', default=[20000, 0])
-        coeffs_args = [chr(97 + i) for i in range(len(coeffs_vals) + 1)]
-        model_coeffs = {arg: float(val) for arg, val in zip(coeffs_args, coeffs_vals)}
+    def _init_models(self):
+        final_models = {}
         models = {
             'linear': {'args': {'count': 2, 'a': None}, 'func': self.polynomial_model},
             'quadratic': {'args': {'count': 3, 'a': None}, 'func': self.polynomial_model},
@@ -85,34 +91,51 @@ class MotorsSync:
             'hyperbolic': {'args': {'count': 2, 'a': 0}, 'func': self.hyperbolic_model},
             'exponential': {'args': {'count': 3, 'a': 0}, 'func': self.exponential_model}
         }
-        if model in models:
-            if len(model_coeffs) == models[model]['args']['count']:
-                if models[model]['args']['a'] != model_coeffs['a']:
-                    return models[model]['func'], list(model_coeffs.values())
+        for axis in self.axes:
+            try:
+                model = self.config.get(f'model_{axis.lower()}').lower()
+            except:
+                model = self.config.get('model', 'linear').lower()
+            try:
+                coeffs_vals = self.config.getlist(f'model_coeffs_{axis.lower()}')
+            except:
+                coeffs_vals = self.config.getlist('model_coeffs', default=[20000, 0])
+            coeffs_args = [chr(97 + i) for i in range(len(coeffs_vals) + 1)]
+            model_coeffs = {arg: float(val) for arg, val in zip(coeffs_args, coeffs_vals)}
+            if model not in models:
+                raise self.config.error(f"Invalid model '{model}'")
+            if len(model_coeffs) != models[model]['args']['count']:
+                raise self.config.error(f"{model.capitalize()} model requires "
+                                        f"{models[model]['args']['count']} coefficients")
+            if models[model]['args']['a'] == model_coeffs['a']:
                 raise self.config.error(f"Coefficient 'a' cannot be "
-                                        f"{model_coeffs['a']} for a {model} model")
-            raise self.config.error(f"{model.capitalize()} model requires "
-                                    f"{models[model]['args']['count']} coefficients")
-        raise self.config.error(f"Invalid model '{model}'")
+                                        f"{model_coeffs['a']} for a '{model}' model")
+            final_models[axis] = [models[model]['func'], list(model_coeffs.values())]
+        if self.kin in ['corexy']:
+            model_params = list(final_models.values())
+            if not all(val == model_params[0] for val in model_params):
+                raise self.config.error(f"Models and coefficients cannot be "
+                                        f"different for a '{self.kin}' kinematics")
+        return final_models
 
-    def polynomial_model(self, fx):
-        sol = np.roots([*self.model_coeffs[:-1], self.model_coeffs[-1] - fx])
+    def polynomial_model(self, coeffs, fx):
+        sol = np.roots([*coeffs[:-1], coeffs[-1] - fx])
         return max(sol.real)
 
-    def power_model(self, fx):
-        a, b = self.model_coeffs
+    def power_model(self, coeffs, fx):
+        a, b = coeffs
         return (fx / a) ** (1 / b)
 
-    def root_model(self, fx):
-        a, b = self.model_coeffs
+    def root_model(self, coeffs, fx):
+        a, b = coeffs
         return (fx**2 - 2*b*fx + b**2) / a**2
 
-    def hyperbolic_model(self, fx):
-        a, b = self.model_coeffs
+    def hyperbolic_model(self, coeffs, fx):
+        a, b = coeffs
         return a / (fx - b)
 
-    def exponential_model(self, fx):
-        a, b, c = self.model_coeffs
+    def exponential_model(self, coeffs, fx):
+        a, b, c = coeffs
         return np.log((fx - c) / a) / b
 
     def _send(self, params):
@@ -205,8 +228,9 @@ class MotorsSync:
             while True:
                 if not m['move_dir'][1]:
                     self._detect_move_dir(max_ax)
-                delta = int(self.solve_model(m['magnitude']) - self.solve_model(s['magnitude']))
-                m['move_msteps'] = min(max(delta, 1), self.max_step_size)
+                steps_delta = int(m['solve_model'](m['model_coeffs'], m['magnitude']) -
+                                  m['solve_model'](m['model_coeffs'], s['magnitude']))
+                m['move_msteps'] = min(max(steps_delta, 1), self.max_step_size)
                 self._stepper_move(m['lookuped_steppers'][0], m['move_msteps'] * m['move_len'] * m['move_dir'][0])
                 m['actual_msteps'] += m['move_msteps'] * m['move_dir'][0]
                 m['new_magnitude'] = self._measure(max_ax, True)
@@ -248,7 +272,8 @@ class MotorsSync:
             if not m['out_msg']:
                 if not m['move_dir'][1]:
                     self._detect_move_dir(axis)
-                m['move_msteps'] = min(max(int(self.solve_model(m['magnitude'])), 1), self.max_step_size)
+                m['move_msteps'] = min(max(
+                    int(m['solve_model'](m['model_coeffs'], m['magnitude'])), 1), self.max_step_size)
                 self._stepper_move(m['lookuped_steppers'][0], m['move_msteps'] * m['move_len'] * m['move_dir'][0])
                 m['actual_msteps'] += m['move_msteps'] * m['move_dir'][0]
                 m['new_magnitude'] = self._measure(axis, True)
@@ -300,6 +325,7 @@ class MotorsSync:
         for axis in self.axes:
             self.motion[axis] = {}
             self.motion[axis]['chip_config'] = self.printer.lookup_object(self.accel_chips[axis])
+            self.motion[axis]['solve_model'], self.motion[axis]['model_coeffs'] = self.solve_models[axis]
             stepper = 'stepper_' + axis.lower()
             self.motion[axis]['stepper'] = stepper
             self.motion[axis]['lookuped_steppers'] = [
@@ -321,8 +347,8 @@ class MotorsSync:
         self._final_sync(max_ax)
         self.status.check_retry_result('done')
         # Info
-        for _, params in self.motion.items():
-            self.gcode.respond_info(f"{params['out_msg']}\n")
+        for params in self.motion.values():
+            self.gcode.respond_info(f"{params['out_msg']}")
 
     def cmd_CALIBRATE_SYNC(self, gcmd):
         # Calibrate sync model and model coeffs
@@ -441,9 +467,9 @@ class MotorsSync:
             return f'Access to interactive plot at: {png_path}'
 
         repeats = gcmd.get_int('REPEATS', 10, minval=1, maxval=100)
+        axis = gcmd.get_int('AXIS', self.axes[0])
         self.gcode.respond_info('Synchronizing before calibration')
         self.cmd_RUN_SYNC(gcmd)
-        axis = self.axes[0]
         m = self.motion[axis]
         min_pos, max_pos, rd = self.lookup_config(
             m['stepper'], ['position_min', 'position_max', 'rotation_distance'], 0)

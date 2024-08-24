@@ -38,10 +38,10 @@ the first measurement -
 [motors_sync]
 axes: x,y
 #    Axes on which calibration will be performed.
-accel_chip_x:
-accel_chip_y:
+accel_chip:
 #    Accelerometers for vibration collection: adxl345 / mpu9250 / lis2dw,
-#    etc. Are indicated for each axis on which calibration is performed.
+#    etc. Are indicated general or for axis on which calibration is
+#    performed, for example - accel_chip_x or accel_chip_y.
 #microsteps: 16
 #    Maximum microstepping displacement of the stepper motor rotor. It's
 #    not necessary to increase the value above 16 with 20t pulley, these
@@ -49,10 +49,11 @@ accel_chip_y:
 #model: linear
 #    Model of the dependence of the displacement of microsteps on the
 #    shaft of a stepper motor depends on the magnitude of the measured
-#    oscillations. Supported models: linear, quadratic, power, root,
-#    hyperbolic, exponential.
+#    oscillations. Are indicated general or for axis. Supported models:
+#    linear, quadratic, power, root, hyperbolic, exponential.
 #model_coeffs: 20000, 0
 #    Coefficients above the described model, for calculating microsteps.
+#    Are indicated general or for axis.
 #max_step_size: 5
 #    The maximum number of microsteps that the motor can take move at time,
 #    to achieve the planned magnitude.
@@ -119,7 +120,7 @@ of microsteps on the magnitude of fluctuations. To do this, enter the
 command `SYNC_MOTORS_CALIBRATE` into the terminal, some parameters can
 also be redefined:
 ```
-SYNC_MOTORS_CALIBRATE [PEAK_POINT=<value>] [REPEATS=<value>]
+SYNC_MOTORS_CALIBRATE AXIS=[<axis>] [PEAK_POINT=<value>] [REPEATS=<value>]
 ```
 By default, the calibration will perform 10 iterations of 
 increasing/decreasing magnitude in the range from `~0` to 
