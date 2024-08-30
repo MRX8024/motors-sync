@@ -8,7 +8,7 @@ import numpy as np
 from . import z_tilt
 
 MEASURE_DELAY = 0.05        # Delay between damped oscillations and measurement
-AXES_LEVEL_DELTA = 2000     # Magnitude difference between axes
+AXES_STEPS_DELTA = 5        # Steps difference between axes to update axis magnitude
 MEDIAN_FILTER_WINDOW = 3    # Number of window lines
 
 class MotorsSync:
@@ -22,7 +22,7 @@ class MotorsSync:
         self.printer.register_event_handler("klippy:connect", self._handle_connect)
         self.status = z_tilt.ZAdjustStatus(self.printer)
         # Read config
-        self.axes, self.do_level = self._init_axes()
+        self.conf_axes, self.do_level = self._init_axes()
         self.accel_chips = self._init_chips()
         self.microsteps = self.config.getint('microsteps', default=16, minval=2, maxval=32)
         self.solve_models = self._init_models()
@@ -69,7 +69,7 @@ class MotorsSync:
 
     def _init_chips(self):
         chips = {}
-        for axis in self.axes:
+        for axis in self.conf_axes:
             try:
                 chips[axis] = self.config.get(f'accel_chip_{axis.lower()}')
             except:
@@ -91,7 +91,7 @@ class MotorsSync:
             'hyperbolic': {'args': {'count': 2, 'a': 0}, 'func': self.hyperbolic_model},
             'exponential': {'args': {'count': 3, 'a': 0}, 'func': self.exponential_model}
         }
-        for axis in self.axes:
+        for axis in self.conf_axes:
             try:
                 model = self.config.get(f'model_{axis.lower()}').lower()
             except:
@@ -196,12 +196,12 @@ class MotorsSync:
         now = self.printer.get_reactor().monotonic()
         kin_status = self.toolhead.get_kinematics().get_status(now)
         center = {}
-        for axis in self.axes:
+        for axis in self.conf_axes:
             stepper = 'stepper_' + axis.lower()
             min_pos, max_pos = self.lookup_config(stepper, ['position_min', 'position_max'], 0)
             center[axis] = min_pos + (max_pos - min_pos) / 2
-        if ''.join(self.axes).lower() not in kin_status['homed_axes']:
-            self._send(f"G28 {' '.join(self.axes)}")
+        if ''.join(self.conf_axes).lower() not in kin_status['homed_axes']:
+            self._send(f"G28 {' '.join(self.conf_axes)}")
         self._send(f"G0 {' '.join(f'{axis}{pos}'for axis, pos in center.items())} F{self.travel_speed * 60}")
         self.toolhead.wait_moves()
 
@@ -210,6 +210,7 @@ class MotorsSync:
         m = self.motion[axis]
         self._stepper_move(m['lookuped_steppers'][0], m['move_msteps'] * m['move_len'])
         m['actual_msteps'] += m['move_msteps']
+        m['check_msteps'] += m['move_msteps']
         m['new_magnitude'] = self._measure(axis, True)
         self.gcode.respond_info(f"{axis}-New magnitude: {m['new_magnitude']} "
                                 f"on {m['move_msteps']}/{self.microsteps} step move")
@@ -217,102 +218,96 @@ class MotorsSync:
         self.gcode.respond_info(f"{axis}-Movement direction: {m['move_dir'][1]}")
         m['magnitude'] = m['new_magnitude']
 
-    def _axes_level(self, min_ax, max_ax):
-        # Axes leveling by magnitude
-        m = self.motion[max_ax]
-        s = self.motion[min_ax]
-        delta = round(m['init_magnitude'] - s['init_magnitude'], 2)
-        if delta > AXES_LEVEL_DELTA:
-            self.gcode.respond_info(f'Start axes level, delta: {delta}')
-            force_exit = False
-            while True:
-                if not m['move_dir'][1]:
-                    self._detect_move_dir(max_ax)
-                steps_delta = int(m['solve_model'](m['model_coeffs'], m['magnitude']) -
-                                  m['solve_model'](m['model_coeffs'], s['magnitude']))
-                m['move_msteps'] = min(max(steps_delta, 1), self.max_step_size)
-                self._stepper_move(m['lookuped_steppers'][0], m['move_msteps'] * m['move_len'] * m['move_dir'][0])
-                m['actual_msteps'] += m['move_msteps'] * m['move_dir'][0]
-                m['new_magnitude'] = self._measure(max_ax, True)
-                self.gcode.respond_info(f"{max_ax}-New magnitude: {m['new_magnitude']} on"
-                                        f" {m['move_msteps'] * m['move_dir'][0]}/{self.microsteps} step move")
-                if m['new_magnitude'] > m['magnitude']:
-                    self._stepper_move(m['lookuped_steppers'][0], m['move_msteps']
-                                       * m['move_len'] * m['move_dir'][0] * -1)
-                    m['actual_msteps'] -= m['move_msteps'] * m['move_dir'][0]
-                    if self.retry_tolerance and m['magnitude'] > self.retry_tolerance:
-                        self.retries += 1
-                        if self.retries > self.max_retries:
-                            self.gcode.respond_info(
-                                f"{max_ax} Motors adjusted by {m['actual_msteps']}/"
-                                f"{self.microsteps} step, magnitude {m['init_magnitude']} --> {m['magnitude']}")
-                            raise self.gcode.error('Too many retries')
-                        self.gcode.respond_info(
-                            f"Retries: {self.retries}/{self.max_retries} Data in loop is incorrect! ")
-                        m['move_dir'][1] = ''
-                        continue
-                    force_exit = True
-                delta = round(m['new_magnitude'] - s['init_magnitude'], 2)
-                if delta < AXES_LEVEL_DELTA or m['new_magnitude'] < s['init_magnitude'] or force_exit:
-                    m['magnitude'] = m['new_magnitude']
-                    self.gcode.respond_info(f"Axes are leveled: {max_ax}: {m['init_magnitude']} --> "
-                                            f"{m['new_magnitude']} {min_ax}: {s['init_magnitude']}, delta: {delta}")
-                    # Measure new shifted magnitude on sond axis
-                    s['magnitude'] = self._measure(min_ax, True)
-                    self.gcode.respond_info(f"{min_ax}-New magnitude: {s['magnitude']}")
-                    return
-                m['magnitude'] = m['new_magnitude']
-                continue
-
-    def _final_sync(self, max_ax):
-        # Axes calibration to zero magnitude
-        axes = self.axes[::-1] if max_ax == self.axes[0] else self.axes
-        for axis in itertools.cycle(axes):
+    def _sync(self):
+        def inner_sync(axis, init_axis, force_init):
             m = self.motion[axis]
-            if not m['out_msg']:
-                if not m['move_dir'][1]:
-                    self._detect_move_dir(axis)
-                m['move_msteps'] = min(max(
-                    int(m['solve_model'](m['model_coeffs'], m['magnitude'])), 1), self.max_step_size)
-                self._stepper_move(m['lookuped_steppers'][0], m['move_msteps'] * m['move_len'] * m['move_dir'][0])
-                m['actual_msteps'] += m['move_msteps'] * m['move_dir'][0]
-                m['new_magnitude'] = self._measure(axis, True)
-                self.gcode.respond_info(f"{axis}-New magnitude: {m['new_magnitude']} on "
-                                        f"{m['move_msteps'] * m['move_dir'][0]}/{self.microsteps} step move")
-                if m['new_magnitude'] > m['magnitude']:
-                    # Move on previous microstep
-                    self._stepper_move(m['lookuped_steppers'][0],
-                                       m['move_msteps'] * m['move_len'] * m['move_dir'][0] * -1)
-                    m['actual_msteps'] -= m['move_msteps'] * m['move_dir'][0]
-                    if self.retry_tolerance and m['magnitude'] > self.retry_tolerance:
-                        self.retries += 1
-                        if self.retries > self.max_retries:
-                            self.gcode.respond_info(
-                                f"{axis} Motors adjusted by {m['actual_msteps']}/{self.microsteps}"
-                                f" step, magnitude {m['init_magnitude']} --> {m['magnitude']}")
-                            raise self.gcode.error('Too many retries')
+            if not m['move_dir'][1]:
+                if not m['new_magnitude'] and not init_axis or force_init:
+                    m['new_magnitude'] = self._measure(axis, True)
+                    self.gcode.respond_info(f"{axis}-New magnitude: {m['new_magnitude']}")
+                    m['magnitude'] = m['new_magnitude']
+                    if self.retry_tolerance and m['new_magnitude'] < self.retry_tolerance and not force_init:
+                        m['out_msg'] = (f"{axis}-Motors adjusted by {m['actual_msteps']}/{self.microsteps}"
+                                        f" step, magnitude {m['init_magnitude']} --> {m['magnitude']}")
+                        return
+                    elif force_init:
+                        return
+                self._detect_move_dir(axis)
+                return
+            m['move_msteps'] = min(max(int(m['solve_model'](m['model_coeffs'], m['magnitude'])), 1), self.max_step_size)
+            self._stepper_move(m['lookuped_steppers'][0], m['move_msteps'] * m['move_len'] * m['move_dir'][0])
+            move_msteps = m['move_msteps'] * m['move_dir'][0]
+            m['actual_msteps'] += move_msteps
+            m['check_msteps'] += move_msteps
+            m['new_magnitude'] = self._measure(axis, True)
+            self.gcode.respond_info(f"{axis}-New magnitude: {m['new_magnitude']} on "
+                                    f"{m['move_msteps'] * m['move_dir'][0]}/{self.microsteps} step move")
+            if m['new_magnitude'] > m['magnitude']:
+                self._stepper_move(m['lookuped_steppers'][0],
+                                   m['move_msteps'] * m['move_len'] * m['move_dir'][0] * -1)
+                m['actual_msteps'] -= m['move_msteps'] * m['move_dir'][0]
+                if self.retry_tolerance and m['magnitude'] > self.retry_tolerance:
+                    self.retries += 1
+                    if self.retries > self.max_retries:
                         self.gcode.respond_info(
-                            f"{axis} Retries: {self.retries}/{self.max_retries} Back on last magnitude: {m['magnitude']}"
-                            f" on {m['actual_msteps']}/{self.microsteps} step to reach {self.retry_tolerance}")
-                        m['move_dir'][1] = ''
-                        continue
-                    m['out_msg'] = (f"{axis}-Motors adjusted by {m['actual_msteps']}/"
-                                f"{self.microsteps} step, magnitude {m['init_magnitude']} --> {m['magnitude']}")
-                    continue
-                m['magnitude'] = m['new_magnitude']
-            else:
-                if all(bool(self.motion[axis]['out_msg']) for axis in self.motion):
+                            f"{axis} Motors adjusted by {m['actual_msteps']}/{self.microsteps}"
+                            f" step, magnitude {m['init_magnitude']} --> {m['magnitude']}")
+                        raise self.gcode.error('Too many retries')
+                    self.gcode.respond_info(
+                        f"{axis} Retries: {self.retries}/{self.max_retries} Back on last magnitude: {m['magnitude']}"
+                        f" on {m['actual_msteps']}/{self.microsteps} step to reach {self.retry_tolerance}")
+                    m['move_dir'][1] = ''
                     return
+                m['out_msg'] = (f"{axis}-Motors adjusted by {m['actual_msteps']}/{self.microsteps}"
+                                f" step, magnitude {m['init_magnitude']} --> {m['magnitude']}")
+                return
+            m['magnitude'] = m['new_magnitude']
+
+        init_axis = True
+        force_init = False
+        if self.do_level and len(self.axes) > 1:
+            cycling = itertools.cycle(self.axes)
+            while True:
+                axis = next(cycling)
+                cycling, cycle = itertools.tee(cycling)
+                m = self.motion[axis]
+                sec = next(cycle)
+                s = self.motion[sec]
+                if m['out_msg']:
+                    if all(bool(self.motion[axis]['out_msg']) for axis in self.motion):
+                        return
+                    continue
+                if m['magnitude'] < s['magnitude'] and not s['out_msg'] and not force_init:
+                    continue
+                inner_sync(axis, init_axis, force_init)
+                init_axis = False
+                force_init = False
+                if abs(abs(m['check_msteps']) - abs(s['check_msteps'])) > AXES_STEPS_DELTA:
+                    force_init = True
+                    m['check_msteps'], s['check_msteps'] = 0, 0
+        else:
+            for axis in self.axes:
+                m = self.motion[axis]
+                while True:
+                    if m['out_msg']:
+                        if all(bool(self.motion[axis]['out_msg']) for axis in self.motion):
+                            return
+                        break
+                    inner_sync(axis, init_axis=True, force_init=False)
 
     def cmd_RUN_SYNC(self, gcmd):
         self.motion = {}
         self.retries = 0
         # Live variables
-        axes_from_gcmd = gcmd.get('AXES', self.axes)
-        if any([axis.upper() not in self.axes for axis in axes_from_gcmd]):
-            raise self.gcode.error(f"Invalid axes parameter")
+        axes_from_gcmd = gcmd.get('AXES', '').split(',')
+        if axes_from_gcmd:
+            self.gcode.respond_info(f'{self.conf_axes}')
+            self.gcode.respond_info(f'{axes_from_gcmd}')
+            if any([axis.upper() not in self.conf_axes for axis in axes_from_gcmd]):
+                raise self.gcode.error(f"Invalid axes parameter")
+            self.axes = [axis.upper() for axis in axes_from_gcmd]
         else:
-            self.axes = [axis.upper() for axis in axes_from_gcmd if axis.upper() in self.axes]
+            self.axes = self.conf_axes
         for axis in self.axes:
             self.accel_chips[axis] = gcmd.get(f'ACCEL_CHIP_{axis}', self.accel_chips[axis])
         self.retry_tolerance = gcmd.get_int('RETRY_TOLERANCE', self.retry_tolerance, minval=0, maxval=999999)
@@ -335,20 +330,21 @@ class MotorsSync:
             self.motion[axis]['move_len'] = rd / fspr / self.microsteps
             self.motion[axis]['move_msteps'] = 2
             self.motion[axis]['actual_msteps'] = 0
+            self.motion[axis]['check_msteps'] = 0
             self.motion[axis]['init_magnitude'] = self._measure(axis, True)
             self.motion[axis]['magnitude'] = self.motion[axis]['init_magnitude']
             self.motion[axis]['new_magnitude'] = 0
             self.motion[axis]['out_msg'] = ''
             self.gcode.respond_info(f"{axis}-Initial magnitude: {self.motion[axis]['init_magnitude']}")
-        max_ax = ''
-        if self.do_level and len(self.axes) > 1:
-            max_ax, min_ax = sorted(self.motion, key=lambda x: self.motion[x]['init_magnitude'], reverse=True)[:2]
-            self._axes_level(min_ax, max_ax)
-        self._final_sync(max_ax)
+        if self.retry_tolerance and all(
+                params['init_magnitude'] < self.retry_tolerance for params in self.motion.values()):
+            self.gcode.respond_info(f'Motors magnitudes are in tolerance ({self.retry_tolerance})')
+        else:
+            self._sync()
+            # Info
+            for params in self.motion.values():
+                self.gcode.respond_info(params['out_msg'])
         self.status.check_retry_result('done')
-        # Info
-        for params in self.motion.values():
-            self.gcode.respond_info(f"{params['out_msg']}")
 
     def cmd_CALIBRATE_SYNC(self, gcmd):
         # Calibrate sync model and model coeffs
@@ -523,7 +519,7 @@ class MotorsSync:
                 self.gcode.respond_info(str(line))
 
         # Run plotter
-        proces = multiprocessing.Process(target=_samples_processing())
+        proces = multiprocessing.Process(target=_samples_processing)
         proces.daemon = False
         proces.start()
 
