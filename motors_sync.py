@@ -299,10 +299,9 @@ class MotorsSync:
         self.motion = {}
         self.retries = 0
         # Live variables
-        axes_from_gcmd = gcmd.get('AXES', '').split(',')
+        axes_from_gcmd = gcmd.get('AXES', '')
         if axes_from_gcmd:
-            self.gcode.respond_info(f'{self.conf_axes}')
-            self.gcode.respond_info(f'{axes_from_gcmd}')
+            axes_from_gcmd = axes_from_gcmd.split(',')
             if any([axis.upper() not in self.conf_axes for axis in axes_from_gcmd]):
                 raise self.gcode.error(f"Invalid axes parameter")
             self.axes = [axis.upper() for axis in axes_from_gcmd]
