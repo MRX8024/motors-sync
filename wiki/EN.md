@@ -57,7 +57,7 @@ accel_chip:
 #max_step_size: 5
 #    The maximum number of microsteps that the motor can take move at time,
 #    to achieve the planned magnitude.
-#retry_tolerance: 999999
+#retry_tolerance: 0
 #    The forced threshold to which a pair of stepper motors on one belt
 #    will have to lower the magnitude of the oscillations. It's recommended
 #    to configure in order to filter possible inaccuracies. After several

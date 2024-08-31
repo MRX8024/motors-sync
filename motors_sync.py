@@ -27,7 +27,7 @@ class MotorsSync:
         self.microsteps = self.config.getint('microsteps', default=16, minval=2, maxval=32)
         self.solve_models = self._init_models()
         self.max_step_size = self.config.getint('max_step_size', default=5, minval=1, maxval=self.microsteps)
-        self.retry_tolerance = self.config.getint('retry_tolerance', default=999999, minval=0, maxval=999999)
+        self.retry_tolerance = self.config.getint('retry_tolerance', default=0, minval=0, maxval=999999)
         self.max_retries = self.config.getint('retries', default=0, minval=0, maxval=10)
         self.debug = self.config.getboolean('debug', default=False)
         # Register commands
