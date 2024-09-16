@@ -462,7 +462,7 @@ class MotorsSync:
             return f'Access to interactive plot at: {png_path}'
 
         repeats = gcmd.get_int('REPEATS', 10, minval=1, maxval=100)
-        axis = gcmd.get_int('AXIS', self.axes[0])
+        axis = gcmd.get_int('AXIS', self.conf_axes[0])
         self.gcode.respond_info('Synchronizing before calibration')
         self.cmd_RUN_SYNC(gcmd)
         m = self.motion[axis]
