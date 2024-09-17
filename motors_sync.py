@@ -8,7 +8,6 @@ import numpy as np
 from . import z_tilt
 
 MEASURE_DELAY = 0.05        # Delay between damped oscillations and measurement
-AXES_STEPS_DELTA = 5        # Steps difference between axes to update axis magnitude
 MEDIAN_FILTER_WINDOW = 3    # Number of window lines
 
 class MotorsSync:
@@ -26,7 +25,9 @@ class MotorsSync:
         self.accel_chips = self._init_chips()
         self.microsteps = self.config.getint('microsteps', default=16, minval=2, maxval=32)
         self.solve_models = self._init_models()
-        self.max_step_size = self.config.getint('max_step_size', default=5, minval=1, maxval=self.microsteps)
+        self.max_step_size = self.config.getint('max_step_size', default=3, minval=1, maxval=(self.microsteps / 2))
+        vals = self.max_step_size + 1
+        self.axes_steps_diff = self.config.getint('axes_steps_diff', default=vals, minval=vals, maxval=999999)
         self.retry_tolerance = self.config.getint('retry_tolerance', default=0, minval=0, maxval=999999)
         self.max_retries = self.config.getint('retries', default=0, minval=0, maxval=10)
         self.debug = self.config.getboolean('debug', default=False)
@@ -219,19 +220,24 @@ class MotorsSync:
         m['magnitude'] = m['new_magnitude']
 
     def _sync(self):
-        def inner_sync(axis, init_axis, force_init):
+        # Axes synchronization
+        def inner_sync(axis, check_axis):
+            # If you have any ideas on how to simplify this trash, suggest (c)
             m = self.motion[axis]
+            if check_axis:
+                m['new_magnitude'] = self._measure(axis, True)
+                self.gcode.respond_info(f"{axis}-New magnitude: {m['new_magnitude']}")
+                m['magnitude'] = m['new_magnitude']
+                return
             if not m['move_dir'][1]:
-                if not m['new_magnitude'] and not init_axis or force_init:
+                if not m['new_magnitude']:
                     m['new_magnitude'] = self._measure(axis, True)
-                    self.gcode.respond_info(f"{axis}-New magnitude: {m['new_magnitude']}")
                     m['magnitude'] = m['new_magnitude']
-                    if self.retry_tolerance and m['new_magnitude'] < self.retry_tolerance and not force_init:
-                        m['out_msg'] = (f"{axis}-Motors adjusted by {m['actual_msteps']}/{self.microsteps}"
-                                        f" step, magnitude {m['init_magnitude']} --> {m['magnitude']}")
-                        return
-                    elif force_init:
-                        return
+                    self.gcode.respond_info(f"{axis}-New magnitude: {m['new_magnitude']}")
+                if not m['actual_msteps'] and self.retry_tolerance and m['new_magnitude'] < self.retry_tolerance:
+                    m['out_msg'] = (f"{axis}-Motors adjusted by {m['actual_msteps']}/{self.microsteps} "
+                                    f"step, magnitude {m['init_magnitude']} --> {m['magnitude']}")
+                    return
                 self._detect_move_dir(axis)
                 return
             m['move_msteps'] = min(max(int(m['solve_model'](m['model_coeffs'], m['magnitude'])), 1), self.max_step_size)
@@ -263,10 +269,10 @@ class MotorsSync:
                 return
             m['magnitude'] = m['new_magnitude']
 
-        init_axis = True
-        force_init = False
+        check_axis = False
         if self.do_level and len(self.axes) > 1:
             cycling = itertools.cycle(self.axes)
+            self._detect_move_dir(max(self.motion, key=lambda k: self.motion[k]['init_magnitude']))
             while True:
                 axis = next(cycling)
                 cycling, cycle = itertools.tee(cycling)
@@ -277,23 +283,24 @@ class MotorsSync:
                     if all(bool(self.motion[axis]['out_msg']) for axis in self.motion):
                         return
                     continue
-                if m['magnitude'] < s['magnitude'] and not s['out_msg'] and not force_init:
-                    continue
-                inner_sync(axis, init_axis, force_init)
-                init_axis = False
-                force_init = False
-                if abs(abs(m['check_msteps']) - abs(s['check_msteps'])) > AXES_STEPS_DELTA:
-                    force_init = True
-                    m['check_msteps'], s['check_msteps'] = 0, 0
+                if m['magnitude'] < s['magnitude'] and not s['out_msg']:
+                    if abs(abs(m['check_msteps']) - abs(s['check_msteps'])) > self.axes_steps_diff:
+                        check_axis = True
+                        m['check_msteps'], s['check_msteps'] = 0, 0
+                    else:
+                        continue
+                inner_sync(axis, check_axis)
+                check_axis = False
         else:
             for axis in self.axes:
                 m = self.motion[axis]
+                self._detect_move_dir(axis)
                 while True:
                     if m['out_msg']:
                         if all(bool(self.motion[axis]['out_msg']) for axis in self.motion):
                             return
                         break
-                    inner_sync(axis, init_axis=True, force_init=False)
+                    inner_sync(axis, check_axis=False)
 
     def cmd_RUN_SYNC(self, gcmd):
         self.motion = {}
