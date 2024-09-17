@@ -54,9 +54,13 @@ accel_chip:
 #model_coeffs: 20000, 0
 #    Coefficients above the described model, for calculating microsteps.
 #    Are indicated general or for axis.
-#max_step_size: 5
+#max_step_size: 3
 #    The maximum number of microsteps that the motor can take move at time,
 #    to achieve the planned magnitude.
+#axes_steps_diff: 4
+#    Microstep difference between two axes to trigger an additional check
+#    of the current magnitude on the weaker axis. (only for corexy)
+#    The typical and minimum value - max_step_size + 1.
 #retry_tolerance: 0
 #    The forced threshold to which a pair of stepper motors on one belt
 #    will have to lower the magnitude of the oscillations. It's recommended
