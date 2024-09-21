@@ -21,10 +21,10 @@ class MotorsSync:
         self.printer.register_event_handler("klippy:connect", self._handle_connect)
         self.status = z_tilt.ZAdjustStatus(self.printer)
         # Read config
-        self.conf_axes, self.do_level = self._init_axes()
-        self.accel_chips = self._init_chips()
+        self._init_axes()
+        self._init_chips()
         self.microsteps = self.config.getint('microsteps', default=16, minval=2, maxval=32)
-        self.solve_models = self._init_models()
+        self._init_models()
         self.max_step_size = self.config.getint('max_step_size', default=3, minval=1, maxval=(self.microsteps / 2))
         vals = self.max_step_size + 1
         self.axes_steps_diff = self.config.getint('axes_steps_diff', default=vals, minval=vals, maxval=999999)
@@ -40,6 +40,8 @@ class MotorsSync:
         self.toolhead = self.printer.lookup_object('toolhead')
         self.travel_speed = self.toolhead.max_velocity / 2
         self.travel_accel = min(self.toolhead.max_accel, 5000)
+        self.kin = self.toolhead.get_kinematics()
+        self._init_steppers()
 
     def lookup_config(self, section, section_entries, force_back=None):
         # Loockup in printer config
@@ -55,32 +57,51 @@ class MotorsSync:
 
     def _init_axes(self):
         valid_axes = ['X', 'Y']
-        self.kin = self.lookup_config('printer', ['kinematics'])
-        if self.kin == 'corexy':
-            do_level = True
+        self.conf_kin = self.lookup_config('printer', ['kinematics'])
+        if self.conf_kin == 'corexy':
+            self.do_level = True
             axes = [a.upper() for a in self.config.getlist('axes', count=2, default=['x', 'y'])]
-        elif self.kin == 'cartesian':
-            do_level = False
+        elif self.conf_kin == 'cartesian':
+            self.do_level = False
             axes = [a.upper() for a in self.config.getlist('axes')]
         else:
-            raise self.config.error(f"Not supported kinematics '{self.kin}'")
-        if any([axis not in valid_axes for axis in axes]):
+            raise self.config.error(f"Not supported kinematics '{self.conf_kin}'")
+        if any(axis not in valid_axes for axis in axes):
             raise self.config.error('Invalid axes parameter')
-        return axes, do_level
+        self.motion = {axis: {} for axis in axes}
+        for axis in axes:
+            min_pos, max_pos = self.lookup_config(
+                'stepper_' + axis.lower(), ['position_min', 'position_max'], 0)
+            self.motion[axis]['center_pos'] = (min_pos + max_pos) / 2
+
+    def _init_steppers(self):
+        for axis in self.motion:
+            lo_axis = axis.lower()
+            stepper = 'stepper_' + lo_axis
+            rd, fspr = self.lookup_config(
+                stepper, ['rotation_distance', 'full_steps_per_rotation'], 200)
+            steppers = [s for s in self.kin.get_steppers()
+                        if s.is_active_axis(lo_axis) and lo_axis in s.get_name()]
+            if len(steppers) > 2:
+                raise self.config.error(f'Not supported count of motors: {len(steppers)}')
+            self.motion[axis].update({
+                'stepper': stepper,
+                'lookuped_steppers': steppers,
+                'move_len': rd / fspr / self.microsteps
+            })
 
     def _init_chips(self):
         chips = {}
-        for axis in self.conf_axes:
+        for axis in self.motion:
             try:
                 chips[axis] = self.config.get(f'accel_chip_{axis.lower()}')
             except:
                 chips[axis] = self.config.get('accel_chip')
-        if self.kin in ['corexy']:
-            list_chips = list(chips.values())
-            if not all(chip == list_chips[0] for chip in list_chips):
-                raise self.config.error(f"Accel chips cannot be different "
-                                        f"for a '{self.kin}' kinematics")
-        return chips
+        if self.conf_kin in ['corexy'] and len(set(chips.values())) > 1:
+            raise self.config.error(f"Accel chips cannot be different "
+                                    f"for a '{self.conf_kin}' kinematics")
+        for axis, chip in chips.items():
+            self.motion[axis]['chip_config'] = self.printer.lookup_object(chip)
 
     def _init_models(self):
         final_models = {}
@@ -92,7 +113,7 @@ class MotorsSync:
             'hyperbolic': {'args': {'count': 2, 'a': 0}, 'func': self.hyperbolic_model},
             'exponential': {'args': {'count': 3, 'a': 0}, 'func': self.exponential_model}
         }
-        for axis in self.conf_axes:
+        for axis in self.motion:
             try:
                 model = self.config.get(f'model_{axis.lower()}').lower()
             except:
@@ -112,12 +133,14 @@ class MotorsSync:
                 raise self.config.error(f"Coefficient 'a' cannot be "
                                         f"{model_coeffs['a']} for a '{model}' model")
             final_models[axis] = [models[model]['func'], list(model_coeffs.values())]
-        if self.kin in ['corexy']:
-            model_params = list(final_models.values())
-            if not all(val == model_params[0] for val in model_params):
-                raise self.config.error(f"Models and coefficients cannot be "
-                                        f"different for a '{self.kin}' kinematics")
-        return final_models
+        if self.conf_kin == 'corexy' and len(set(model for model, _ in final_models.values())) > 1:
+            raise self.config.error(f"Models and coefficients cannot be "
+                                    f"different for a '{self.conf_kin}' kinematics")
+        for axis, (model, coeffs) in final_models.items():
+            self.motion[axis].update({
+                'solve_model': model,
+                'model_coeffs': coeffs
+            })
 
     def polynomial_model(self, coeffs, fx):
         sol = np.roots([*coeffs[:-1], coeffs[-1] - fx])
@@ -195,15 +218,14 @@ class MotorsSync:
     def _homing(self):
         # Homing and going to center
         now = self.printer.get_reactor().monotonic()
-        kin_status = self.toolhead.get_kinematics().get_status(now)
         center = {}
-        for axis in self.conf_axes:
-            stepper = 'stepper_' + axis.lower()
-            min_pos, max_pos = self.lookup_config(stepper, ['position_min', 'position_max'], 0)
-            center[axis] = min_pos + (max_pos - min_pos) / 2
-        if ''.join(self.conf_axes).lower() not in kin_status['homed_axes']:
-            self._send(f"G28 {' '.join(self.conf_axes)}")
-        self._send(f"G0 {' '.join(f'{axis}{pos}'for axis, pos in center.items())} F{self.travel_speed * 60}")
+        axes = self.motion.keys()
+        for axis in axes:
+            center[axis] = self.motion[axis]['center_pos']
+        if ''.join(axes).lower() not in self.kin.get_status(now)['homed_axes']:
+            self._send(f"G28 {' '.join(axes)}")
+        self._send(f"G0 {' '.join(f'{axis}{pos}' for axis, pos in center.items())}"
+                   f" F{self.travel_speed * 60}")
         self.toolhead.wait_moves()
 
     def _detect_move_dir(self, axis):
@@ -280,7 +302,7 @@ class MotorsSync:
                 sec = next(cycle)
                 s = self.motion[sec]
                 if m['out_msg']:
-                    if all(bool(self.motion[axis]['out_msg']) for axis in self.motion):
+                    if all(bool(self.motion[axis]['out_msg']) for axis in self.axes):
                         return
                     continue
                 if m['magnitude'] < s['magnitude'] and not s['out_msg']:
@@ -297,25 +319,29 @@ class MotorsSync:
                 self._detect_move_dir(axis)
                 while True:
                     if m['out_msg']:
-                        if all(bool(self.motion[axis]['out_msg']) for axis in self.motion):
+                        if all(bool(self.motion[axis]['out_msg']) for axis in self.axes):
                             return
                         break
                     inner_sync(axis, check_axis=False)
 
     def cmd_RUN_SYNC(self, gcmd):
-        self.motion = {}
         self.retries = 0
         # Live variables
         axes_from_gcmd = gcmd.get('AXES', '')
         if axes_from_gcmd:
             axes_from_gcmd = axes_from_gcmd.split(',')
-            if any([axis.upper() not in self.conf_axes for axis in axes_from_gcmd]):
-                raise self.gcode.error(f"Invalid axes parameter")
+            if any([axis.upper() not in self.motion.keys() for axis in axes_from_gcmd]):
+                raise self.gcode.error(f'Invalid axes parameter')
             self.axes = [axis.upper() for axis in axes_from_gcmd]
         else:
-            self.axes = self.conf_axes
+            self.axes = self.motion.keys()
         for axis in self.axes:
-            self.accel_chips[axis] = gcmd.get(f'ACCEL_CHIP_{axis}', self.accel_chips[axis])
+            chip = gcmd.get(f'ACCEL_CHIP_{axis}', '')
+            if chip:
+                try:
+                    self.motion[axis]['chip_config'] = self.printer.lookup_object(chip)
+                except Exception as e:
+                    raise self.gcode.error(e)
         self.retry_tolerance = gcmd.get_int('RETRY_TOLERANCE', self.retry_tolerance, minval=0, maxval=999999)
         self.max_retries = gcmd.get_int('RETRIES', self.max_retries, minval=0, maxval=10)
         # Run
@@ -324,32 +350,26 @@ class MotorsSync:
         self.gcode.respond_info('Motors synchronization started')
         # Init axes
         for axis in self.axes:
-            self.motion[axis] = {}
-            self.motion[axis]['chip_config'] = self.printer.lookup_object(self.accel_chips[axis])
-            self.motion[axis]['solve_model'], self.motion[axis]['model_coeffs'] = self.solve_models[axis]
-            stepper = 'stepper_' + axis.lower()
-            self.motion[axis]['stepper'] = stepper
-            self.motion[axis]['lookuped_steppers'] = [
-                self.force_move.lookup_stepper(stepper + str(n) if n else stepper) for n in range(2)]
-            self.motion[axis]['move_dir'] = [1, '']
-            rd, fspr = self.lookup_config(stepper, ['rotation_distance', 'full_steps_per_rotation'], 200)
-            self.motion[axis]['move_len'] = rd / fspr / self.microsteps
-            self.motion[axis]['move_msteps'] = 2
-            self.motion[axis]['actual_msteps'] = 0
-            self.motion[axis]['check_msteps'] = 0
-            self.motion[axis]['init_magnitude'] = self._measure(axis, True)
-            self.motion[axis]['magnitude'] = self.motion[axis]['init_magnitude']
-            self.motion[axis]['new_magnitude'] = 0
-            self.motion[axis]['out_msg'] = ''
-            self.gcode.respond_info(f"{axis}-Initial magnitude: {self.motion[axis]['init_magnitude']}")
+            init_magnitude = self._measure(axis, True)
+            self.motion[axis].update({
+                'move_dir': [1, ''],
+                'move_msteps': 2,
+                'actual_msteps': 0,
+                'check_msteps': 0,
+                'init_magnitude': init_magnitude,
+                'magnitude': init_magnitude,
+                'new_magnitude': 0,
+                'out_msg': '',
+            })
+            self.gcode.respond_info(f"{axis}-Initial magnitude: {init_magnitude}")
         if self.retry_tolerance and all(
-                params['init_magnitude'] < self.retry_tolerance for params in self.motion.values()):
+                self.motion[axis]['init_magnitude'] < self.retry_tolerance for axis in self.axes):
             self.gcode.respond_info(f'Motors magnitudes are in tolerance ({self.retry_tolerance})')
         else:
             self._sync()
             # Info
-            for params in self.motion.values():
-                self.gcode.respond_info(params['out_msg'])
+            for axis in self.axes:
+                self.gcode.respond_info(self.motion[axis]['out_msg'])
         self.status.check_retry_result('done')
 
     def cmd_CALIBRATE_SYNC(self, gcmd):
@@ -469,7 +489,7 @@ class MotorsSync:
             return f'Access to interactive plot at: {png_path}'
 
         repeats = gcmd.get_int('REPEATS', 10, minval=1, maxval=100)
-        axis = gcmd.get_int('AXIS', self.conf_axes[0])
+        axis = gcmd.get_int('AXIS', next(iter(self.motion)))
         self.gcode.respond_info('Synchronizing before calibration')
         self.cmd_RUN_SYNC(gcmd)
         m = self.motion[axis]
