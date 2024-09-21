@@ -230,7 +230,7 @@ class MotorsSync:
                 m['magnitude'] = m['new_magnitude']
                 return
             if not m['move_dir'][1]:
-                if not m['new_magnitude']:
+                if not m['new_magnitude'] or self.retries:
                     m['new_magnitude'] = self._measure(axis, True)
                     m['magnitude'] = m['new_magnitude']
                     self.gcode.respond_info(f"{axis}-New magnitude: {m['new_magnitude']}")
