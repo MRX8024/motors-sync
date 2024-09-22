@@ -133,7 +133,8 @@ class MotorsSync:
                 raise self.config.error(f"Coefficient 'a' cannot be "
                                         f"{model_coeffs['a']} for a '{model}' model")
             final_models[axis] = [models[model]['func'], list(model_coeffs.values())]
-        if self.conf_kin == 'corexy' and len(set(model for model, _ in final_models.values())) > 1:
+        if self.conf_kin == 'corexy' and not all(
+                v == final_models[axis] for v in final_models.values()):
             raise self.config.error(f"Models and coefficients cannot be "
                                     f"different for a '{self.conf_kin}' kinematics")
         for axis, (model, coeffs) in final_models.items():
