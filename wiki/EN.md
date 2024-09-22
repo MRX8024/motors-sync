@@ -22,6 +22,18 @@ opposite direction. In this case, calibration ends at the microstep with
 the smallest impact or performs additional iterations to achieve the set
 oscillation threshold a specified number of times.
 
+Notes:
+1. Do not turn on the hotend heating during synchronization. Working
+   the fan (in general, any fan in the printer) can interfere with
+   correct and more accurate measurement. But if he has to be
+   when turned on, try not to turn it off in the middle
+   measurements. You can measure/compare noises with the standard
+   klipper command - [MEASURE_AXES_NOISE
+   ](https://www.klipper3d.org/G-Codes.html#measure_axes_noise)
+2. We not recommend to use the `lis2dw` accelerometer due to the low
+   sampling rate, it can poorly detect magnitude peaks, however, its
+   operation has been optimized.
+
 ### 1. Installing the calibration script on the printer host -
 
 ```
@@ -46,6 +58,13 @@ accel_chip:
 #    Maximum microstepping displacement of the stepper motor rotor. It's
 #    not necessary to increase the value above 16 with 20t pulley, these
 #    fluctuations are elusive.
+#sync_method: sequential/alternately
+#    Method for synchronizing two axes on interconnected kinematics:
+#    'alternately' - the axes move alternately, step by step. (default)
+#    'synchronous' - the axes move depending on their magnitude, trying
+#    to minimizing the delta between axis magnitudes.
+#    Method for synchronizing axis/axes on NOT interconnected kinematics:
+#    'sequential' - axes are calibrated sequentially. (default)
 #model: linear
 #    Model of the dependence of the displacement of microsteps on the
 #    shaft of a stepper motor depends on the magnitude of the measured
@@ -58,9 +77,9 @@ accel_chip:
 #    The maximum number of microsteps that the motor can take move at time,
 #    to achieve the planned magnitude.
 #axes_steps_diff: 4
-#    Microstep difference between two axes to trigger an additional check
-#    of the current magnitude on the weaker axis. (only for corexy)
-#    The typical and minimum value - max_step_size + 1.
+#    Only for synchronous sync method: microstep difference between two
+#    axes to trigger an additional check of the current magnitude on the
+#    weaker axis. The typical and minimum value - max_step_size + 1.
 #retry_tolerance: 0
 #    The forced threshold to which a pair of stepper motors on one belt
 #    will have to lower the magnitude of the oscillations. It's recommended
@@ -83,15 +102,7 @@ accel_chip:
    For the convenience of configuring additional parameters, you can add a
    macro from `motors_sync.cfg` to get the physical buttons\cells in the
    interface.
-5. Notes:
-    1. Do not turn on the hotend heating during synchronization. Working
-       the fan (in general, any fan in the printer) can interfere with
-       correct and more accurate measurement. But if he has to be
-       when turned on, try not to turn it off in the middle
-       measurements. You can measure/compare noises with the standard
-       klipper command - [MEASURE_AXES_NOISE
-       ](https://www.klipper3d.org/G-Codes.html#measure_axes_noise)
-6. Synchronization usually starts at the beginning of printing, during 
+5. Synchronization usually starts at the beginning of printing, during 
    heating the table. To do this, add it to the macro\slicer. For example -
 ```
 M140 S ;set bed temp
@@ -101,7 +112,7 @@ M190 S   ; wait for bed temp to stabilize
 M104 S   ;set extruder temp
 ...
 ```
-7. A calibration status variable is also entered, which is reset when the
+6. A calibration status variable is also entered, which is reset when the
    printer motors are turned off. You can start syncing via
    `motors_sync.cfg`, which already has this check in itself, or check its
    state is inside the macro. In case of a positive status, do not
