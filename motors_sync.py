@@ -7,8 +7,9 @@ import os, logging, time, itertools
 import numpy as np
 from . import z_tilt
 
-MEASURE_DELAY = 0.05        # Delay between damped oscillations and measurement
-MEDIAN_FILTER_WINDOW = 3    # Number of window lines
+MEASURE_DELAY = 0.05            # Delay between damped oscillations and measurement
+ACCEL_FILTER_WINDOW = 3         # Number of window lines in accelerometer filter
+ACCEL_FILTER_THRESHOLD = 3000   # Accelerometer filter disabled at lower sampling rate
 
 class MotorsSync:
     def __init__(self, config):
@@ -101,7 +102,10 @@ class MotorsSync:
             raise self.config.error(f"Accel chips cannot be different "
                                     f"for a '{self.conf_kin}' kinematics")
         for axis, chip in chips.items():
-            self.motion[axis]['chip_config'] = self.printer.lookup_object(chip)
+            chip_config = self.printer.lookup_object(chip)
+            self.motion[axis]['chip_config'] = chip_config
+            self.motion[axis]['chip_filter'] = (
+                    chip_config.data_rate > ACCEL_FILTER_THRESHOLD)
 
     def _init_models(self):
         final_models = {}
@@ -182,7 +186,7 @@ class MotorsSync:
             self._stepper_move(lookup_sec_stepper, dist)
             self._stepper_move(lookup_sec_stepper, -dist)
 
-    def _calc_magnitude(self, aclient):
+    def _calc_magnitude(self, aclient, axis):
         # Calculate impact magnitude
         if self.debug: start_time = time.perf_counter()
         vect = np.array([[sample.accel_x, sample.accel_y, sample.accel_z]
@@ -191,11 +195,14 @@ class MotorsSync:
         z_axis = np.abs(cut).argmax()
         static = np.linalg.norm(cut[np.arange(3) != z_axis])
         xy_vect = np.delete(vect, z_axis, axis=1)
-        # Add window median filter
-        half_window = MEDIAN_FILTER_WINDOW // 2
-        magnitudes = np.linalg.norm(np.array(np.median(
-            [xy_vect[i - half_window:i + half_window + 1]
-             for i in range(half_window, len(xy_vect) - half_window)], axis=1)), axis=1)
+        if self.motion[axis]['chip_filter']:
+            # Add window median filter
+            half_window = ACCEL_FILTER_WINDOW // 2
+            magnitudes = np.linalg.norm(np.median(
+                [xy_vect[i - half_window:i + half_window + 1]
+                 for i in range(half_window, len(xy_vect) - half_window)], axis=1), axis=1)
+        else:
+            magnitudes = np.linalg.norm(xy_vect, axis=1)
         # Return avg of 5 max magnitudes with deduction static
         magnitude = np.mean(np.sort(magnitudes)[-5:])
         if self.debug:
@@ -214,7 +221,7 @@ class MotorsSync:
         self._stepper_switch(stepper, 1)
         self.toolhead.dwell(MEASURE_DELAY)
         aclient.finish_measurements()
-        return self._calc_magnitude(aclient)
+        return self._calc_magnitude(aclient, axis)
 
     def _homing(self):
         # Homing and going to center
@@ -340,9 +347,11 @@ class MotorsSync:
             chip = gcmd.get(f'ACCEL_CHIP_{axis}', '')
             if chip:
                 try:
-                    self.motion[axis]['chip_config'] = self.printer.lookup_object(chip)
+                    chip_config = self.printer.lookup_object(chip)
                 except Exception as e:
                     raise self.gcode.error(e)
+                self.motion[axis]['chip_config'] = chip_config
+                self.motion[axis]['chip_filter'] = chip_config.data_rate > ACCEL_FILTER_THRESHOLD
         self.retry_tolerance = gcmd.get_int('RETRY_TOLERANCE', self.retry_tolerance, minval=0, maxval=999999)
         self.max_retries = gcmd.get_int('RETRIES', self.max_retries, minval=0, maxval=10)
         # Run
