@@ -8,8 +8,11 @@ import numpy as np
 from . import z_tilt
 
 MEASURE_DELAY = 0.05            # Delay between damped oscillations and measurement
+AXES_LEVEL_DELTA = 2000         # Magnitude difference between axes
 ACCEL_FILTER_WINDOW = 3         # Number of window lines in accelerometer filter
 ACCEL_FILTER_THRESHOLD = 3000   # Accelerometer filter disabled at lower sampling rate
+LEVELING_KINEMATICS = (         # Kinematics with interconnected axes
+    ['corexy'])
 
 class MotorsSync:
     def __init__(self, config):
@@ -25,6 +28,7 @@ class MotorsSync:
         self._init_axes()
         self._init_chips()
         self.microsteps = self.config.getint('microsteps', default=16, minval=2, maxval=32)
+        self._init_sync_method()
         self._init_models()
         self.max_step_size = self.config.getint('max_step_size', default=3, minval=1, maxval=(self.microsteps / 2))
         vals = self.max_step_size + 1
@@ -59,7 +63,7 @@ class MotorsSync:
     def _init_axes(self):
         valid_axes = ['X', 'Y']
         self.conf_kin = self.lookup_config('printer', ['kinematics'])
-        if self.conf_kin == 'corexy':
+        if self.conf_kin in LEVELING_KINEMATICS:
             self.do_level = True
             axes = [a.upper() for a in self.config.getlist('axes', count=2, default=['x', 'y'])]
         elif self.conf_kin == 'cartesian':
@@ -98,7 +102,7 @@ class MotorsSync:
                 chips[axis] = self.config.get(f'accel_chip_{axis.lower()}')
             except:
                 chips[axis] = self.config.get('accel_chip')
-        if self.conf_kin in ['corexy'] and len(set(chips.values())) > 1:
+        if self.conf_kin in LEVELING_KINEMATICS and len(set(chips.values())) > 1:
             raise self.config.error(f"Accel chips cannot be different "
                                     f"for a '{self.conf_kin}' kinematics")
         for axis, chip in chips.items():
@@ -106,6 +110,20 @@ class MotorsSync:
             self.motion[axis]['chip_config'] = chip_config
             self.motion[axis]['chip_filter'] = (
                     chip_config.data_rate > ACCEL_FILTER_THRESHOLD)
+
+    def _init_sync_method(self):
+        methods = ['sequential', 'alternately', 'synchronous']
+        self.sync_method = self.config.get('sync_method', default='')
+        if not self.sync_method:
+            if self.conf_kin in LEVELING_KINEMATICS:
+                self.sync_method = methods[1]
+            else:
+                self.sync_method = methods[0]
+        if self.sync_method not in methods:
+            raise self.config.error(f'Invalid sync method: {self.sync_method}')
+        if self.sync_method in methods[1:] and self.conf_kin not in LEVELING_KINEMATICS:
+            raise self.config.error(
+                f"Invalid sync method: {self.sync_method} for '{self.conf_kin}'")
 
     def _init_models(self):
         final_models = {}
@@ -137,7 +155,7 @@ class MotorsSync:
                 raise self.config.error(f"Coefficient 'a' cannot be "
                                         f"{model_coeffs['a']} for a '{model}' model")
             final_models[axis] = [models[model]['func'], list(model_coeffs.values())]
-        if self.conf_kin == 'corexy' and not all(
+        if self.conf_kin in LEVELING_KINEMATICS and not all(
                 v == final_models[axis] for v in final_models.values()):
             raise self.config.error(f"Models and coefficients cannot be "
                                     f"different for a '{self.conf_kin}' kinematics")
@@ -251,7 +269,52 @@ class MotorsSync:
 
     def _sync(self):
         # Axes synchronization
-        def inner_sync(axis, check_axis):
+        def axes_level(min_ax, max_ax):
+            # Axes leveling by magnitude
+            m = self.motion[max_ax]
+            s = self.motion[min_ax]
+            delta = m['init_magnitude'] - s['init_magnitude']
+            if delta > AXES_LEVEL_DELTA:
+                self.gcode.respond_info(f'Start axes level, delta: {delta:.2f}')
+                force_exit = False
+                while True:
+                    if not m['move_dir'][1]:
+                        self._detect_move_dir(max_ax)
+                    steps_delta = int(m['solve_model'](m['model_coeffs'], m['magnitude']) -
+                                      m['solve_model'](m['model_coeffs'], s['magnitude']))
+                    m['move_msteps'] = min(max(steps_delta, 1), self.max_step_size)
+                    self._stepper_move(m['lookuped_steppers'][0], m['move_msteps'] * m['move_len'] * m['move_dir'][0])
+                    m['actual_msteps'] += m['move_msteps'] * m['move_dir'][0]
+                    m['new_magnitude'] = self._measure(max_ax, True)
+                    self.gcode.respond_info(f"{max_ax}-New magnitude: {m['new_magnitude']} on "
+                                            f"{m['move_msteps'] * m['move_dir'][0]}/{self.microsteps} step move")
+                    if m['new_magnitude'] > m['magnitude']:
+                        self._stepper_move(m['lookuped_steppers'][0], m['move_msteps']
+                                           * m['move_len'] * m['move_dir'][0] * -1)
+                        m['actual_msteps'] -= m['move_msteps'] * m['move_dir'][0]
+                        if self.retry_tolerance and m['magnitude'] > self.retry_tolerance:
+                            self.retries += 1
+                            if self.retries > self.max_retries:
+                                self.gcode.respond_info(
+                                    f"{max_ax} Motors adjusted by {m['actual_msteps']}/"
+                                    f"{self.microsteps} step, magnitude {m['init_magnitude']} --> {m['magnitude']}")
+                                raise self.gcode.error('Too many retries')
+                            self.gcode.respond_info(
+                                f"Retries: {self.retries}/{self.max_retries} Data in loop is incorrect! ")
+                            m['move_dir'][1] = ''
+                            continue
+                        force_exit = True
+                    delta = m['new_magnitude'] - s['init_magnitude']
+                    if delta < AXES_LEVEL_DELTA or m['new_magnitude'] < s['init_magnitude'] or force_exit:
+                        m['magnitude'] = m['new_magnitude']
+                        self.gcode.respond_info(
+                            f"Axes are leveled: {max_ax}: {m['init_magnitude']} --> "
+                            f"{m['new_magnitude']} {min_ax}: {s['init_magnitude']}, delta: {delta:.2f}")
+                        return
+                    m['magnitude'] = m['new_magnitude']
+                    continue
+
+        def inner_sync(axis, check_axis=False):
             # If you have any ideas on how to simplify this trash, suggest (c)
             m = self.motion[axis]
             if check_axis:
@@ -299,8 +362,19 @@ class MotorsSync:
                 return
             m['magnitude'] = m['new_magnitude']
 
-        check_axis = False
-        if self.do_level and len(self.axes) > 1:
+        if self.sync_method == 'alternately' and len(self.axes) > 1:
+            min_ax, max_ax = sorted(self.motion, key=lambda x: self.motion[x]['init_magnitude'])[:2]
+            axes_level(min_ax, max_ax)
+            axes = self.axes[::-1] if max_ax == self.axes[0] else self.axes
+            for axis in itertools.cycle(axes):
+                m = self.motion[axis]
+                if m['out_msg']:
+                    if all(bool(self.motion[axis]['out_msg']) for axis in self.axes):
+                        return
+                    continue
+                inner_sync(axis)
+        elif self.sync_method == 'synchronous' and len(self.axes) > 1:
+            check_axis = False
             cycling = itertools.cycle(self.axes)
             self._detect_move_dir(max(self.motion, key=lambda k: self.motion[k]['init_magnitude']))
             while True:
@@ -321,7 +395,7 @@ class MotorsSync:
                         continue
                 inner_sync(axis, check_axis)
                 check_axis = False
-        else:
+        elif self.sync_method == 'sequential' or len(self.axes) == 1:
             for axis in self.axes:
                 m = self.motion[axis]
                 self._detect_move_dir(axis)
@@ -330,7 +404,9 @@ class MotorsSync:
                         if all(bool(self.motion[axis]['out_msg']) for axis in self.axes):
                             return
                         break
-                    inner_sync(axis, check_axis=False)
+                    inner_sync(axis)
+        else:
+            raise self.gcode.error('Error in sync methods!')
 
     def cmd_RUN_SYNC(self, gcmd):
         self.retries = 0
@@ -342,7 +418,7 @@ class MotorsSync:
                 raise self.gcode.error(f'Invalid axes parameter')
             self.axes = [axis.upper() for axis in axes_from_gcmd]
         else:
-            self.axes = self.motion.keys()
+            self.axes = list(self.motion.keys())
         for axis in self.axes:
             chip = gcmd.get(f'ACCEL_CHIP_{axis}', '')
             if chip:
