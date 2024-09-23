@@ -95,6 +95,19 @@ class MotorsSync:
                 'move_len': rd / fspr / self.microsteps
             })
 
+    def _init_chip_config(self, axis, chip):
+        chip_config = self.printer.lookup_object(chip)
+        self.motion[axis]['chip_config'] = chip_config
+        if hasattr(chip_config, 'data_rate'):
+            self.motion[axis]['chip_filter'] = (
+                chip_config.data_rate > ACCEL_FILTER_THRESHOLD)
+        elif chip == 'beacon':
+            # Beacon sampling rate > ACCEL_FILTER_THRESHOLD
+            self.motion[axis]['chip_filter'] = True
+        else:
+            raise self.config.error(f"Unknown accelerometer "
+                                    f"'{chip}' sampling rate")
+
     def _init_chips(self):
         chips = {}
         for axis in self.motion:
@@ -106,10 +119,7 @@ class MotorsSync:
             raise self.config.error(f"Accel chips cannot be different "
                                     f"for a '{self.conf_kin}' kinematics")
         for axis, chip in chips.items():
-            chip_config = self.printer.lookup_object(chip)
-            self.motion[axis]['chip_config'] = chip_config
-            self.motion[axis]['chip_filter'] = (
-                    chip_config.data_rate > ACCEL_FILTER_THRESHOLD)
+            self._init_chip_config(axis, chip)
 
     def _init_sync_method(self):
         methods = ['sequential', 'alternately', 'synchronous']
@@ -423,11 +433,10 @@ class MotorsSync:
             chip = gcmd.get(f'ACCEL_CHIP_{axis}', '')
             if chip:
                 try:
-                    chip_config = self.printer.lookup_object(chip)
+                    self.printer.lookup_object(chip)
                 except Exception as e:
                     raise self.gcode.error(e)
-                self.motion[axis]['chip_config'] = chip_config
-                self.motion[axis]['chip_filter'] = chip_config.data_rate > ACCEL_FILTER_THRESHOLD
+                self._init_chip_config(axis, chip)
         self.retry_tolerance = gcmd.get_int('RETRY_TOLERANCE', self.retry_tolerance, minval=0, maxval=999999)
         self.max_retries = gcmd.get_int('RETRIES', self.max_retries, minval=0, maxval=10)
         # Run
