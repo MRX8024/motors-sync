@@ -219,18 +219,18 @@ class MotorsSync:
         if self.debug: start_time = time.perf_counter()
         vect = np.array([[sample.accel_x, sample.accel_y, sample.accel_z]
                          for sample in aclient.get_samples()])
-        cut = np.mean(vect[0:100, :], axis=0)
-        z_axis = np.abs(cut).argmax()
-        static = np.linalg.norm(cut[np.arange(3) != z_axis])
+        vect_len = vect.shape[0]
+        cut = vect[:vect_len // 10, :]
+        z_axis = np.mean(np.abs(cut), axis=0).argmax()
         xy_vect = np.delete(vect, z_axis, axis=1)
+        magnitudes = np.linalg.norm(xy_vect, axis=1)
         if self.motion[axis]['chip_filter']:
             # Add window median filter
             half_window = ACCEL_FILTER_WINDOW // 2
-            magnitudes = np.linalg.norm(np.median(
-                [xy_vect[i - half_window:i + half_window + 1]
-                 for i in range(half_window, len(xy_vect) - half_window)], axis=1), axis=1)
-        else:
-            magnitudes = np.linalg.norm(xy_vect, axis=1)
+            magnitudes = np.median(
+                [magnitudes[i - half_window:i + half_window + 1]
+                 for i in range(half_window, len(magnitudes) - half_window)], axis=1)
+        static = np.mean(magnitudes[:vect_len // 2])
         # Return avg of 5 max magnitudes with deduction static
         magnitude = np.mean(np.sort(magnitudes)[-5:])
         if self.debug:
