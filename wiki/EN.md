@@ -25,10 +25,8 @@ oscillation threshold a specified number of times.
 Notes:
 1. Do not turn on the hotend heating during synchronization. Working
    the fan (in general, any fan in the printer) can interfere with
-   correct and more accurate measurement. But if he has to be
-   when turned on, try not to turn it off in the middle
-   measurements. You can measure/compare noises with the standard
-   klipper command - [MEASURE_AXES_NOISE
+   correct and more accurate measurement. You can measure/compare noises
+   with the standard klipper command - [MEASURE_AXES_NOISE
    ](https://www.klipper3d.org/G-Codes.html#measure_axes_noise)
 2. We not recommend to use the `lis2dw` accelerometer due to the low
    sampling rate, it can poorly detect magnitude peaks, however, its
@@ -58,12 +56,12 @@ accel_chip:
 #    Maximum microstepping displacement of the stepper motor rotor. It's
 #    not necessary to increase the value above 16 with 20t pulley, these
 #    fluctuations are elusive.
-#sync_method: sequential/alternately
-#    Method for synchronizing two axes on interconnected kinematics:
+#sync_method: default
+#    Methods for synchronizing two axes on interconnected kinematics:
 #    'alternately' - the axes move alternately, step by step. (default)
 #    'synchronous' - the axes move depending on their magnitude, trying
 #    to minimizing the delta between axis magnitudes.
-#    Method for synchronizing axis/axes on NOT interconnected kinematics:
+#    Methods for synchronizing axis/axes on NOT interconnected kinematics:
 #    'sequential' - axes are calibrated sequentially. (default)
 #model: linear
 #    Model of the dependence of the displacement of microsteps on the
