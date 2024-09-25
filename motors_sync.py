@@ -122,15 +122,14 @@ class MotorsSync:
             self._init_chip_config(axis, chip)
 
     def _init_sync_method(self):
-        methods = ['sequential', 'alternately', 'synchronous']
-        self.sync_method = self.config.get('sync_method', default='')
-        if not self.sync_method:
+        methods = ['sequential', 'alternately', 'synchronous', 'default']
+        self.sync_method = self.config.getchoice(
+            'sync_method', {m: m for m in methods}, 'default')
+        if self.sync_method == 'default':
             if self.conf_kin in LEVELING_KINEMATICS:
                 self.sync_method = methods[1]
             else:
                 self.sync_method = methods[0]
-        if self.sync_method not in methods:
-            raise self.config.error(f'Invalid sync method: {self.sync_method}')
         if self.sync_method in methods[1:] and self.conf_kin not in LEVELING_KINEMATICS:
             raise self.config.error(
                 f"Invalid sync method: {self.sync_method} for '{self.conf_kin}'")
@@ -151,9 +150,9 @@ class MotorsSync:
             except:
                 model = self.config.get('model', 'linear').lower()
             try:
-                coeffs_vals = self.config.getlist(f'model_coeffs_{axis.lower()}')
+                coeffs_vals = self.config.getfloatlist(f'model_coeffs_{axis.lower()}')
             except:
-                coeffs_vals = self.config.getlist('model_coeffs', default=[20000, 0])
+                coeffs_vals = self.config.getfloatlist('model_coeffs', default=[20000, 0])
             coeffs_args = [chr(97 + i) for i in range(len(coeffs_vals) + 1)]
             model_coeffs = {arg: float(val) for arg, val in zip(coeffs_args, coeffs_vals)}
             if model not in models:
@@ -175,23 +174,28 @@ class MotorsSync:
                 'model_coeffs': coeffs
             })
 
-    def polynomial_model(self, coeffs, fx):
+    @classmethod
+    def polynomial_model(cls, coeffs, fx):
         sol = np.roots([*coeffs[:-1], coeffs[-1] - fx])
         return max(sol.real)
 
-    def power_model(self, coeffs, fx):
+    @classmethod
+    def power_model(cls, coeffs, fx):
         a, b = coeffs
         return (fx / a) ** (1 / b)
 
-    def root_model(self, coeffs, fx):
+    @classmethod
+    def root_model(cls, coeffs, fx):
         a, b = coeffs
         return (fx**2 - 2*b*fx + b**2) / a**2
 
-    def hyperbolic_model(self, coeffs, fx):
+    @classmethod
+    def hyperbolic_model(cls, coeffs, fx):
         a, b = coeffs
         return a / (fx - b)
 
-    def exponential_model(self, coeffs, fx):
+    @classmethod
+    def exponential_model(cls, coeffs, fx):
         a, b, c = coeffs
         return np.log((fx - c) / a) / b
 
@@ -210,7 +214,7 @@ class MotorsSync:
         lookup_sec_stepper = self.motion[axis]['lookuped_steppers'][1]
         self._stepper_switch(self.motion[axis]['stepper'], 0)
         for i in reversed(range(0, int(0.4 / move_len))):
-            dist = round((move_len * 4 * i), 4)
+            dist = move_len * 4 * i
             self._stepper_move(lookup_sec_stepper, dist)
             self._stepper_move(lookup_sec_stepper, -dist)
 
