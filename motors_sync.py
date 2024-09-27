@@ -8,9 +8,8 @@ import numpy as np
 from . import z_tilt
 
 MEASURE_DELAY = 0.05            # Delay between damped oscillations and measurement
-AXES_LEVEL_DELTA = 2000         # Magnitude difference between axes
-ACCEL_FILTER_WINDOW = 3         # Number of window lines in accelerometer filter
 ACCEL_FILTER_THRESHOLD = 3000   # Accelerometer filter disabled at lower sampling rate
+AXES_LEVEL_DELTA = 2000         # Magnitude difference between axes
 LEVELING_KINEMATICS = (         # Kinematics with interconnected axes
     ['corexy'])
 
@@ -27,6 +26,7 @@ class MotorsSync:
         # Read config
         self._init_axes()
         self._init_chips()
+        self._init_chip_filter()
         self.microsteps = self.config.getint('microsteps', default=16, minval=2, maxval=32)
         self._init_sync_method()
         self._init_models()
@@ -120,6 +120,20 @@ class MotorsSync:
                                     f"for a '{self.conf_kin}' kinematics")
         for axis, chip in chips.items():
             self._init_chip_config(axis, chip)
+
+    def _init_chip_filter(self):
+        filters = ['median', 'kalman']
+        filter = self.config.getchoice(
+            'chip_filter', {m: m for m in filters}, 'median')
+        if filter == filters[0]:
+            window = self.config.getint('median_size', default=3, minval=3, maxval=9)
+            if window % 2 == 0:
+                raise self.config.error(f'Window size cannot be even')
+            self.chip_filter = MedianFilter(window).process_samples
+        elif filter == filters[1]:
+            A, H, Q, R, P, x = self.config.getfloatlist(
+                'kalman_coeffs', count=6, default=[1.1, 1., 1e-1, 1e-2, .5, 1.])
+            self.chip_filter = KalmanLiteFilter(A, H, Q, R, P, x).process_samples
 
     def _init_sync_method(self):
         methods = ['sequential', 'alternately', 'synchronous', 'default']
@@ -229,17 +243,15 @@ class MotorsSync:
         xy_vect = np.delete(vect, z_axis, axis=1)
         magnitudes = np.linalg.norm(xy_vect, axis=1)
         if self.motion[axis]['chip_filter']:
-            # Add window median filter
-            half_window = ACCEL_FILTER_WINDOW // 2
-            magnitudes = np.median(
-                [magnitudes[i - half_window:i + half_window + 1]
-                 for i in range(half_window, len(magnitudes) - half_window)], axis=1)
-        static = np.mean(magnitudes[:vect_len // 2])
+            # Add median or Kalman filter
+            magnitudes = self.chip_filter(magnitudes)
+        # Calculate static noise
+        static = np.mean(magnitudes[vect_len // 4:vect_len // 2])
         # Return avg of 5 max magnitudes with deduction static
         magnitude = np.mean(np.sort(magnitudes)[-5:])
-        if self.debug:
-            total_time = time.perf_counter()
-            self.gcode.respond_info(f'Static: {static:.2f}, calc time: {total_time - start_time:.6f} sec')
+        if self.debug: self.gcode.respond_info(
+            f'Static: {static:.2f}, total time: '
+            f'{time.perf_counter() - start_time:.6f}')
         return np.around(magnitude - static, 2)
 
     def _measure(self, axis, buzz=True):
@@ -654,6 +666,46 @@ class MotorsSync:
         else:
             now = self.printer.get_reactor().monotonic()
             return bool(list(self.status.get_status(now).values())[0])
+
+
+class MedianFilter:
+    def __init__(self, window_size):
+        self.w = window_size // 2
+
+    def process_samples(self, samples):
+        return np.median(
+            [samples[i - self.w:i + self.w + 1]
+             for i in range(self.w, len(samples) - self.w)], axis=1)
+
+class KalmanLiteFilter:
+    def __init__(self, A, H, Q, R, P0, x0):
+        self.A = A
+        self.H = H
+        self.Q = Q
+        self.R = R
+        self.P = self.st_p = P0
+        self.x = self.st_x = x0
+        self.I = 1
+
+    def predict(self):
+        self.x = self.A * self.x
+        self.P = self.A * self.P * self.A + self.Q
+
+    def update(self, z):
+        self.predict()
+        y = z - (self.H * self.x)
+        S = self.H * self.P * self.H + self.R
+        K = self.P * self.H * S
+        self.x += K * y
+        self.P = (self.I - K * self.H) * self.P
+        return self.x
+
+    def process_samples(self, samples):
+        self.x = self.st_x
+        self.P = self.st_p
+        return np.array(
+            [self.update(z) for z in samples]).reshape(-1)
+
 
 def load_config(config):
     return MotorsSync(config)
