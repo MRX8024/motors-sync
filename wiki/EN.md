@@ -30,7 +30,7 @@ Notes:
    ](https://www.klipper3d.org/G-Codes.html#measure_axes_noise)
 2. We not recommend to use the `lis2dw` accelerometer due to the low
    sampling rate, it can poorly detect magnitude peaks, however, its
-   operation has been optimized.
+   operation has been optimized by disabling samples filtering.
 
 ### 1. Installing the calibration script on the printer host -
 
@@ -40,9 +40,7 @@ git clone https://github.com/MRX8024/motors-sync
 bash ~/motors-sync/install.sh
 ```
 
-2. Connect the accelerometer, for example, as when measuring resonances
-for input_shaper.
-3. Add a section to the configuration file and partially configure it for
+2. Add a section to the configuration file and partially configure it for
 the first measurement -
 ```
 [motors_sync]
@@ -52,6 +50,14 @@ accel_chip:
 #    Accelerometers for vibration collection: adxl345 / mpu9250 / lis2dw,
 #    etc. Are indicated general or for axis on which calibration is
 #    performed, for example - accel_chip_x or accel_chip_y.
+#chip_filter: median
+#    Filter type for data from the accelerometer: 'median' works well in
+#    most cases, but some particularly noisy printers (fans, etc.) may
+#    require a more powerful filter - 'kalman'. On lis2dw filters disabled.
+#median_size: 3
+#    Median filter window size.
+#kalman_coeffs: 1.1, 1., 1e-1, 1e-2, .5, 1.
+#    Simple coefficients describing the kalman filter.
 #microsteps: 16
 #    Maximum microstepping displacement of the stepper motor rotor. It's
 #    not necessary to increase the value above 16 with 20t pulley, these
@@ -88,7 +94,7 @@ accel_chip:
 #    Maximum number of repetitions to achieve a forced threshold of motor
 #    synchronization deviations.
 ```
-4. Motor synchronization:
+3. Motor synchronization:
    Enter the `SYNC_MOTORS` command in the terminal on the main web page
    interface and wait for the completion of the process.
 
@@ -100,7 +106,7 @@ accel_chip:
    For the convenience of configuring additional parameters, you can add a
    macro from `motors_sync.cfg` to get the physical buttons\cells in the
    interface.
-5. Synchronization usually starts at the beginning of printing, during 
+4. Synchronization usually starts at the beginning of printing, during 
    heating the table. To do this, add it to the macro\slicer. For example -
 ```
 M140 S ;set bed temp
@@ -110,7 +116,7 @@ M190 S   ; wait for bed temp to stabilize
 M104 S   ;set extruder temp
 ...
 ```
-6. A calibration status variable is also entered, which is reset when the
+5. A calibration status variable is also entered, which is reset when the
    printer motors are turned off. You can start syncing via
    `motors_sync.cfg`, which already has this check in itself, or check its
    state is inside the macro. In case of a positive status, do not
