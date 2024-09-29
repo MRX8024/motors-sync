@@ -97,6 +97,7 @@ class MotorsSync:
 
     def _init_chip_config(self, axis, chip):
         chip_config = self.printer.lookup_object(chip)
+        self.motion[axis]['chip'] = chip
         self.motion[axis]['chip_config'] = chip_config
         if hasattr(chip_config, 'data_rate'):
             self.motion[axis]['chip_filter'] = (
@@ -447,7 +448,7 @@ class MotorsSync:
             self.axes = list(self.motion.keys())
         for axis in self.axes:
             chip = gcmd.get(f'ACCEL_CHIP_{axis}', '')
-            if chip:
+            if chip and chip != self.motion[axis]['chip']:
                 try:
                     self.printer.lookup_object(chip)
                 except Exception as e:
@@ -648,10 +649,10 @@ class MotorsSync:
 
         def _samples_processing():
             try:
-                os.nice(20)
+                os.nice(10)
             except:
                 pass
-            msg = find_best_func(x_samples, y_samples, self.accel_chips[axis], self.microsteps)
+            msg = find_best_func(x_samples, y_samples, m['chip'], self.microsteps)
             for line in msg:
                 self.gcode.respond_info(str(line))
 
