@@ -7,6 +7,7 @@ import os, logging, time, itertools
 import numpy as np
 from . import z_tilt
 
+PIN_MIN_TIME = 0.010
 MEASURE_DELAY = 0.05            # Delay between damped oscillations and measurement
 ACCEL_FILTER_THRESHOLD = 3000   # Accelerometer filter disabled at lower sampling rate
 AXES_LEVEL_DELTA = 2000         # Magnitude difference between axes
@@ -35,6 +36,7 @@ class MotorsSync:
         self.axes_steps_diff = self.config.getint('axes_steps_diff', default=vals, minval=vals, maxval=999999)
         self.retry_tolerance = self.config.getint('retry_tolerance', default=0, minval=0, maxval=999999)
         self.max_retries = self.config.getint('retries', default=0, minval=0, maxval=10)
+        self._init_fan()
         self.debug = self.config.getboolean('debug', default=False)
         # Register commands
         self.gcode.register_command('SYNC_MOTORS', self.cmd_RUN_SYNC, desc='Start 4WD synchronization')
@@ -47,6 +49,7 @@ class MotorsSync:
         self.travel_accel = min(self.toolhead.max_accel, 5000)
         self.kin = self.toolhead.get_kinematics()
         self._init_steppers()
+        self._init_fan(True)
 
     def lookup_config(self, section, section_entries, force_back=None):
         # Loockup in printer config
@@ -214,6 +217,51 @@ class MotorsSync:
         a, b, c = coeffs
         return np.log((fx - c) / a) / b
 
+    def _create_fan_switch(self, method):
+        if method == 'heater_fan':
+            def fan_switch(on=True):
+                if not self.fan:
+                    return
+                now = self.printer.get_reactor().monotonic()
+                print_time = self.fan.fan.get_mcu().estimated_print_time(now)
+                speed = self.fan.last_speed if on else .0
+                self.fan.fan.set_speed(print_time + PIN_MIN_TIME, speed)
+        elif method == 'temperature_fan':
+            def fan_switch(on=True):
+                if not self.fan:
+                    return
+                if not self.last_fan_target:
+                    self.last_fan_target = self.fan.target_temp
+                target = self.last_fan_target if on else .0
+                self.fan.set_temp(target)
+            self.last_fan_target = 0
+        else:
+            def fan_switch(on=True):
+                pass
+        self._fan_switch = fan_switch
+
+    def _init_fan(self, connect=False):
+        fan_methods = ['heater_fan', 'temperature_fan']
+        self.fan = None
+        self.conf_fan = self.config.get('head_fan', default=None)
+        # Wait klippy connect
+        if not connect:
+            return
+        # Create a stub
+        if not self.conf_fan:
+            self._create_fan_switch(None)
+            return
+        for method in fan_methods:
+            try:
+                self.fan = self.printer.lookup_object(
+                    f'{method} {self.conf_fan}')
+                self._create_fan_switch(method)
+                return
+            except:
+                continue
+        raise self.config.error(
+            f'Unknown fan or fan method: {self.conf_fan}')
+
     def _send(self, params):
         self.gcode._process_commands([params], False)
 
@@ -325,6 +373,7 @@ class MotorsSync:
                                 self.gcode.respond_info(
                                     f"{max_ax} Motors adjusted by {m['actual_msteps']}/"
                                     f"{self.microsteps} step, magnitude {m['init_magnitude']} --> {m['magnitude']}")
+                                self._fan_switch(True)
                                 raise self.gcode.error('Too many retries')
                             self.gcode.respond_info(
                                 f"Retries: {self.retries}/{self.max_retries} Data in loop is incorrect! ")
@@ -378,6 +427,7 @@ class MotorsSync:
                         self.gcode.respond_info(
                             f"{axis} Motors adjusted by {m['actual_msteps']}/{self.microsteps}"
                             f" step, magnitude {m['init_magnitude']} --> {m['magnitude']}")
+                        self._fan_switch(True)
                         raise self.gcode.error('Too many retries')
                     self.gcode.respond_info(
                         f"{axis} Retries: {self.retries}/{self.max_retries} Back on last magnitude: {m['magnitude']}"
@@ -459,6 +509,7 @@ class MotorsSync:
         # Run
         self.status.reset()
         self._homing()
+        self._fan_switch(False)
         self.gcode.respond_info('Motors synchronization started')
         # Init axes
         for axis in self.axes:
@@ -482,6 +533,7 @@ class MotorsSync:
             # Info
             for axis in self.axes:
                 self.gcode.respond_info(self.motion[axis]['out_msg'])
+        self._fan_switch(True)
         self.status.check_retry_result('done')
 
     def cmd_CALIBRATE_SYNC(self, gcmd):
