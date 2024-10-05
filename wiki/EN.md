@@ -93,6 +93,10 @@ accel_chip:
 #retries: 0
 #    Maximum number of repetitions to achieve a forced threshold of motor
 #    synchronization deviations.
+#head_fan:
+#    Toolhead fan, which will be turned off during sync to eliminate noise.
+#    This is convenient when the fan has a low temp target and is often
+#    turned on, for example in thermal chamber.
 ```
 3. Motor synchronization:
    Enter the `SYNC_MOTORS` command in the terminal on the main web page
@@ -113,7 +117,7 @@ M140 S ;set bed temp
 SYNC_MOTORS
 G28 Z
 M190 S   ; wait for bed temp to stabilize
-M104 S   ;set extruder temp
+M104 S   ; set extruder temp
 ...
 ```
 5. A calibration status variable is also entered, which is reset when the
