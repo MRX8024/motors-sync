@@ -236,8 +236,8 @@ class MotorsSync:
                 self.fan.set_temp(target)
             self.last_fan_target = 0
         else:
-            def fan_switch(on=True):
-                pass
+            def fan_switch(_):
+                return
         self._fan_switch = fan_switch
 
     def _init_fan(self, connect=False):
@@ -349,46 +349,47 @@ class MotorsSync:
             m = self.motion[max_ax]
             s = self.motion[min_ax]
             delta = m['init_magnitude'] - s['init_magnitude']
-            if delta > AXES_LEVEL_DELTA:
-                self.gcode.respond_info(f'Start axes level, delta: {delta:.2f}')
-                force_exit = False
-                while True:
-                    if not m['move_dir'][1]:
-                        self._detect_move_dir(max_ax)
-                    steps_delta = int(m['solve_model'](m['model_coeffs'], m['magnitude']) -
-                                      m['solve_model'](m['model_coeffs'], s['magnitude']))
-                    m['move_msteps'] = min(max(steps_delta, 1), self.max_step_size)
-                    self._stepper_move(m['lookuped_steppers'][0], m['move_msteps'] * m['move_len'] * m['move_dir'][0])
-                    m['actual_msteps'] += m['move_msteps'] * m['move_dir'][0]
-                    m['new_magnitude'] = self._measure(max_ax, True)
-                    self.gcode.respond_info(f"{max_ax}-New magnitude: {m['new_magnitude']} on "
-                                            f"{m['move_msteps'] * m['move_dir'][0]}/{self.microsteps} step move")
-                    if m['new_magnitude'] > m['magnitude']:
-                        self._stepper_move(m['lookuped_steppers'][0], m['move_msteps']
-                                           * m['move_len'] * m['move_dir'][0] * -1)
-                        m['actual_msteps'] -= m['move_msteps'] * m['move_dir'][0]
-                        if self.retry_tolerance and m['magnitude'] > self.retry_tolerance:
-                            self.retries += 1
-                            if self.retries > self.max_retries:
-                                self.gcode.respond_info(
-                                    f"{max_ax} Motors adjusted by {m['actual_msteps']}/"
-                                    f"{self.microsteps} step, magnitude {m['init_magnitude']} --> {m['magnitude']}")
-                                self._fan_switch(True)
-                                raise self.gcode.error('Too many retries')
+            if delta <= AXES_LEVEL_DELTA:
+                return
+            self.gcode.respond_info(f'Start axes level, delta: {delta:.2f}')
+            force_exit = False
+            while True:
+                if not m['move_dir'][1]:
+                    self._detect_move_dir(max_ax)
+                steps_delta = int(m['solve_model'](m['model_coeffs'], m['magnitude']) -
+                                  m['solve_model'](m['model_coeffs'], s['magnitude']))
+                m['move_msteps'] = min(max(steps_delta, 1), self.max_step_size)
+                self._stepper_move(m['lookuped_steppers'][0], m['move_msteps'] * m['move_len'] * m['move_dir'][0])
+                m['actual_msteps'] += m['move_msteps'] * m['move_dir'][0]
+                m['new_magnitude'] = self._measure(max_ax, True)
+                self.gcode.respond_info(f"{max_ax}-New magnitude: {m['new_magnitude']} on "
+                                        f"{m['move_msteps'] * m['move_dir'][0]}/{self.microsteps} step move")
+                if m['new_magnitude'] > m['magnitude']:
+                    self._stepper_move(m['lookuped_steppers'][0], m['move_msteps']
+                                       * m['move_len'] * m['move_dir'][0] * -1)
+                    m['actual_msteps'] -= m['move_msteps'] * m['move_dir'][0]
+                    if self.retry_tolerance and m['magnitude'] > self.retry_tolerance:
+                        self.retries += 1
+                        if self.retries > self.max_retries:
                             self.gcode.respond_info(
-                                f"Retries: {self.retries}/{self.max_retries} Data in loop is incorrect! ")
-                            m['move_dir'][1] = ''
-                            continue
-                        force_exit = True
-                    delta = m['new_magnitude'] - s['init_magnitude']
-                    if delta < AXES_LEVEL_DELTA or m['new_magnitude'] < s['init_magnitude'] or force_exit:
-                        m['magnitude'] = m['new_magnitude']
+                                f"{max_ax} Motors adjusted by {m['actual_msteps']}/"
+                                f"{self.microsteps} step, magnitude {m['init_magnitude']} --> {m['magnitude']}")
+                            self._fan_switch(True)
+                            raise self.gcode.error('Too many retries')
                         self.gcode.respond_info(
-                            f"Axes are leveled: {max_ax}: {m['init_magnitude']} --> "
-                            f"{m['new_magnitude']} {min_ax}: {s['init_magnitude']}, delta: {delta:.2f}")
-                        return
+                            f"Retries: {self.retries}/{self.max_retries} Data in loop is incorrect! ")
+                        m['move_dir'][1] = ''
+                        continue
+                    force_exit = True
+                delta = m['new_magnitude'] - s['init_magnitude']
+                if delta < AXES_LEVEL_DELTA or m['new_magnitude'] < s['init_magnitude'] or force_exit:
                     m['magnitude'] = m['new_magnitude']
-                    continue
+                    self.gcode.respond_info(
+                        f"Axes are leveled: {max_ax}: {m['init_magnitude']} --> "
+                        f"{m['new_magnitude']} {min_ax}: {s['init_magnitude']}, delta: {delta:.2f}")
+                    return
+                m['magnitude'] = m['new_magnitude']
+                continue
 
         def inner_sync(axis, check_axis=False):
             # If you have any ideas on how to simplify this trash, suggest (c)
@@ -729,6 +730,7 @@ class MedianFilter:
         return np.median(
             [samples[i - self.w:i + self.w + 1]
              for i in range(self.w, len(samples) - self.w)], axis=1)
+
 
 class KalmanLiteFilter:
     def __init__(self, A, H, Q, R, P0, x0):
