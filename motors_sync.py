@@ -700,19 +700,19 @@ class MotorsSync:
             self.gcode.respond_info(f"Y Samples: {', '.join([str(i) for i in y_samples])}")
             self.gcode.respond_info(f"X samples: {', '.join([f'{i:.2f}' for i in x_samples])}")
 
-        def _samples_processing():
-            try:
-                os.nice(10)
-            except:
-                pass
-            msg = find_best_func(x_samples, y_samples, m['chip'], self.microsteps)
-            for line in msg:
-                self.gcode.respond_info(str(line))
+#        def _samples_processing():
+#            try:
+#                os.nice(10)
+#            except:
+#                pass
+        msg = find_best_func(x_samples, y_samples, m['chip'], self.microsteps)
+        for line in msg:
+            self.gcode.respond_info(str(line))
 
-        # Run plotter
-        proces = multiprocessing.Process(target=_samples_processing)
-        proces.daemon = False
-        proces.start()
+#        # Run plotter
+#        proces = multiprocessing.Process(target=_samples_processing)
+#        proces.daemon = False
+#        proces.start()
 
     def get_status(self, eventtime=None, user=False):
         if not user:
