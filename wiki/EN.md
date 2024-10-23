@@ -22,6 +22,16 @@ opposite direction. In this case, calibration ends at the microstep with
 the smallest impact or performs additional iterations to achieve the set
 oscillation threshold a specified number of times.
 
+Notes:
+1. Do not turn on the hotend heating during synchronization. Working
+   the fan (in general, any fan in the printer) can interfere with
+   correct and more accurate measurement. You can measure/compare noises
+   with the standard klipper command - [MEASURE_AXES_NOISE
+   ](https://www.klipper3d.org/G-Codes.html#measure_axes_noise)
+2. We not recommend to use the `lis2dw` accelerometer due to the low
+   sampling rate, it can poorly detect magnitude peaks, however, its
+   operation has been optimized by disabling samples filtering.
+
 ### 1. Installing the calibration script on the printer host -
 
 ```
@@ -30,33 +40,51 @@ git clone https://github.com/MRX8024/motors-sync
 bash ~/motors-sync/install.sh
 ```
 
-2. Connect the accelerometer, for example, as when measuring resonances
-for input_shaper.
-3. Add a section to the configuration file and partially configure it for
+2. Add a section to the configuration file and partially configure it for
 the first measurement -
 ```
 [motors_sync]
 axes: x,y
 #    Axes on which calibration will be performed.
-accel_chip_x:
-accel_chip_y:
+accel_chip:
 #    Accelerometers for vibration collection: adxl345 / mpu9250 / lis2dw,
-#    etc. Are indicated for each axis on which calibration is performed.
+#    etc. Are indicated general or for axis on which calibration is
+#    performed, for example - accel_chip_x or accel_chip_y.
+#chip_filter: median
+#    Filter type for data from the accelerometer: 'median' works well in
+#    most cases, but some particularly noisy printers (fans, etc.) may
+#    require a more powerful filter - 'kalman'. On lis2dw filters disabled.
+#median_size: 3
+#    Median filter window size.
+#kalman_coeffs: 1.1, 1., 1e-1, 1e-2, .5, 1.
+#    Simple coefficients describing the kalman filter.
 #microsteps: 16
 #    Maximum microstepping displacement of the stepper motor rotor. It's
 #    not necessary to increase the value above 16 with 20t pulley, these
 #    fluctuations are elusive.
+#sync_method: default
+#    Methods for synchronizing two axes on interconnected kinematics:
+#    'alternately' - the axes move alternately, step by step. (default)
+#    'synchronous' - the axes move depending on their magnitude, trying
+#    to minimizing the delta between axis magnitudes.
+#    Methods for synchronizing axis/axes on NOT interconnected kinematics:
+#    'sequential' - axes are calibrated sequentially. (default)
 #model: linear
 #    Model of the dependence of the displacement of microsteps on the
 #    shaft of a stepper motor depends on the magnitude of the measured
-#    oscillations. Supported models: linear, quadratic, cubic, power, root,
-#    hyperbolic, exponential.
+#    oscillations. Are indicated general or for axis. Supported models:
+#    linear, quadratic, power, root, hyperbolic, exponential.
 #model_coeffs: 20000, 0
 #    Coefficients above the described model, for calculating microsteps.
-#max_step_size: 5
+#    Are indicated general or for axis.
+#max_step_size: 3
 #    The maximum number of microsteps that the motor can take move at time,
 #    to achieve the planned magnitude.
-#retry_tolerance: 999999
+#axes_steps_diff: 4
+#    Only for synchronous sync method: microstep difference between two
+#    axes to trigger an additional check of the current magnitude on the
+#    weaker axis. The typical and minimum value - max_step_size + 1.
+#retry_tolerance: 0
 #    The forced threshold to which a pair of stepper motors on one belt
 #    will have to lower the magnitude of the oscillations. It's recommended
 #    to configure in order to filter possible inaccuracies. After several
@@ -65,8 +93,12 @@ accel_chip_y:
 #retries: 0
 #    Maximum number of repetitions to achieve a forced threshold of motor
 #    synchronization deviations.
+#head_fan:
+#    Toolhead fan, which will be turned off during sync to eliminate noise.
+#    This is convenient when the fan has a low temp target and is often
+#    turned on, for example in thermal chamber.
 ```
-4. Motor synchronization:
+3. Motor synchronization:
    Enter the `SYNC_MOTORS` command in the terminal on the main web page
    interface and wait for the completion of the process.
 
@@ -78,25 +110,17 @@ accel_chip_y:
    For the convenience of configuring additional parameters, you can add a
    macro from `motors_sync.cfg` to get the physical buttons\cells in the
    interface.
-5. Notes:
-    1. Do not turn on the hotend heating during synchronization. Working
-       the fan (in general, any fan in the printer) can interfere with
-       correct and more accurate measurement. But if he has to be
-       when turned on, try not to turn it off in the middle
-       measurements. You can measure/compare noises with the standard
-       klipper command - [MEASURE_AXES_NOISE
-       ](https://www.klipper3d.org/G-Codes.html#measure_axes_noise)
-6. Synchronization usually starts at the beginning of printing, during 
+4. Synchronization usually starts at the beginning of printing, during 
    heating the table. To do this, add it to the macro\slicer. For example -
 ```
 M140 S ;set bed temp
 SYNC_MOTORS
 G28 Z
 M190 S   ; wait for bed temp to stabilize
-M104 S   ;set extruder temp
+M104 S   ; set extruder temp
 ...
 ```
-7. A calibration status variable is also entered, which is reset when the
+5. A calibration status variable is also entered, which is reset when the
    printer motors are turned off. You can start syncing via
    `motors_sync.cfg`, which already has this check in itself, or check its
    state is inside the macro. In case of a positive status, do not
@@ -119,7 +143,7 @@ of microsteps on the magnitude of fluctuations. To do this, enter the
 command `SYNC_MOTORS_CALIBRATE` into the terminal, some parameters can
 also be redefined:
 ```
-SYNC_MOTORS_CALIBRATE [PEAK_POINT=<value>] [REPEATS=<value>]
+SYNC_MOTORS_CALIBRATE AXIS=[<axis>] [PEAK_POINT=<value>] [REPEATS=<value>]
 ```
 By default, the calibration will perform 10 iterations of 
 increasing/decreasing magnitude in the range from `~0` to 
