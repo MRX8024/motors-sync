@@ -12,7 +12,7 @@ MEASURE_DELAY = 0.05            # Delay between damped oscillations and measurem
 ACCEL_FILTER_THRESHOLD = 3000   # Accelerometer filter disabled at lower sampling rate
 AXES_LEVEL_DELTA = 2000         # Magnitude difference between axes
 LEVELING_KINEMATICS = (         # Kinematics with interconnected axes
-    ['corexy'])
+    ['corexy', 'extended_corexy'])
 
 class MotorsSync:
     def __init__(self, config):
@@ -64,11 +64,12 @@ class MotorsSync:
         return out[0] if len(out) == 1 else out
 
     def _init_axes(self):
-        valid_axes = ['X', 'Y']
+        valid_axes = ['X', 'Y', 'U', 'U1']
         self.conf_kin = self.lookup_config('printer', ['kinematics'])
         if self.conf_kin in LEVELING_KINEMATICS:
             self.do_level = True
-            axes = [a.upper() for a in self.config.getlist('axes', count=2, default=['x', 'y'])]
+            axes = [a.upper() for a in self.config.getlist(
+                'axes', default=['x', 'y'])]
         elif self.conf_kin == 'cartesian':
             self.do_level = False
             axes = [a.upper() for a in self.config.getlist('axes')]
@@ -80,22 +81,37 @@ class MotorsSync:
         for axis in axes:
             min_pos, max_pos = self.lookup_config(
                 'stepper_' + axis.lower(), ['position_min', 'position_max'], 0)
-            self.motion[axis]['center_pos'] = (min_pos + max_pos) / 2
+            self.motion[axis].update({
+                'limits': [min_pos + 10, max_pos - 10, (min_pos + max_pos) / 2]
+            })
 
     def _init_steppers(self):
         for axis in self.motion:
             lo_axis = axis.lower()
-            stepper = 'stepper_' + lo_axis
-            rd, fspr = self.lookup_config(
-                stepper, ['rotation_distance', 'full_steps_per_rotation'], 200)
-            steppers = [s for s in self.kin.get_steppers()
-                        if s.is_active_axis(lo_axis) and lo_axis in s.get_name()]
-            if len(steppers) > 2:
+            rd, fspr = self.lookup_config('stepper_' + lo_axis,
+                ['rotation_distance', 'full_steps_per_rotation'], 200)
+            move_len = rd / fspr / self.microsteps
+            steppers, lookuped = zip(*[(l.get_name(), l) for l in
+                self.kin.get_steppers() if lo_axis in l.get_name()])
+            logging.info(f'{steppers}/{lookuped}')
+            if len(steppers) not in (2, 4):
                 raise self.config.error(f'Not supported count of motors: {len(steppers)}')
+            if len(steppers) == 4:
+                for axis, steppers, lookuped in zip(
+                        [axis, axis + '1'],
+                        [steppers[:2][::-1], steppers[2:]],
+                        [lookuped[:2][::-1], lookuped[2:]]
+                ):
+                    self.motion[axis].update({
+                        'steppers': steppers,
+                        'lookuped_steppers': lookuped,
+                        'move_len': move_len
+                    })
+                return
             self.motion[axis].update({
-                'stepper': stepper,
-                'lookuped_steppers': steppers,
-                'move_len': rd / fspr / self.microsteps
+                'steppers': steppers,
+                'lookuped_steppers': lookuped,
+                'move_len': move_len
             })
 
     def _init_chip_config(self, axis, chip):
@@ -129,12 +145,12 @@ class MotorsSync:
         filters = ['median', 'kalman']
         filter = self.config.getchoice(
             'chip_filter', {m: m for m in filters}, 'median')
-        if filter == filters[0]:
+        if filter == 'median':
             window = self.config.getint('median_size', default=3, minval=3, maxval=9)
             if window % 2 == 0:
                 raise self.config.error(f'Window size cannot be even')
             self.chip_filter = MedianFilter(window).process_samples
-        elif filter == filters[1]:
+        elif filter == 'kalman':
             A, H, Q, R, P, x = self.config.getfloatlist(
                 'kalman_coeffs', count=6, default=[1.1, 1., 1e-1, 1e-2, .5, 1.])
             self.chip_filter = KalmanLiteFilter(A, H, Q, R, P, x).process_samples
@@ -266,7 +282,13 @@ class MotorsSync:
         self.gcode._process_commands([params], False)
 
     def _stepper_switch(self, stepper, mode):
-        self.stepper_en.motor_debug_enable(stepper, mode)
+        print_time = self.toolhead.get_last_move_time()
+        el = self.stepper_en.enable_lines[stepper]
+        if mode:
+            el.motor_enable(print_time)
+        else:
+            el.motor_disable(print_time)
+        self.toolhead.dwell(0.1)
 
     def _stepper_move(self, stepper, dist):
         self.force_move.manual_move(stepper, dist, 100, self.travel_accel)
@@ -275,7 +297,11 @@ class MotorsSync:
         # Fading oscillations
         move_len = self.motion[axis]['move_len']
         lookup_sec_stepper = self.motion[axis]['lookuped_steppers'][1]
-        self._stepper_switch(self.motion[axis]['stepper'], 0)
+        self._stepper_switch(self.motion[axis]['steppers'][0], 0)
+        if self.debug: self.gcode.respond_info(f"""{({k: v for k, v in
+            self.stepper_en.get_status('')['steppers'].items() if v and
+                any(k.startswith(f'stepper_{axis.lower()}')
+                    for axis in self.motion.keys())})}""")
         for i in reversed(range(0, int(0.4 / move_len))):
             dist = move_len * 4 * i
             self._stepper_move(lookup_sec_stepper, dist)
@@ -305,7 +331,7 @@ class MotorsSync:
 
     def _measure(self, axis, buzz=True):
         # Measure the impact
-        stepper = self.motion[axis]['stepper']
+        stepper = self.motion[axis]['steppers'][0]
         if buzz: self._buzz(axis)
         self._stepper_switch(stepper, 1)
         self._stepper_switch(stepper, 0)
@@ -320,22 +346,22 @@ class MotorsSync:
         # Homing and going to center
         now = self.printer.get_reactor().monotonic()
         center = {}
-        axes = self.motion.keys()
+        axes = list(self.motion.keys())[:2]
         for axis in axes:
-            center[axis] = self.motion[axis]['center_pos']
+            center[axis] = self.motion[axis]['limits'][2]
         if ''.join(axes).lower() not in self.kin.get_status(now)['homed_axes']:
             self._send(f"G28 {' '.join(axes)}")
         self._send(f"G0 {' '.join(f'{axis}{pos}' for axis, pos in center.items())}"
                    f" F{self.travel_speed * 60}")
         self.toolhead.wait_moves()
 
-    def _detect_move_dir(self, axis):
+    def _detect_move_dir(self, axis, buzz=True):
         # Determine movement direction
         m = self.motion[axis]
         self._stepper_move(m['lookuped_steppers'][0], m['move_msteps'] * m['move_len'])
         m['actual_msteps'] += m['move_msteps']
         m['check_msteps'] += m['move_msteps']
-        m['new_magnitude'] = self._measure(axis, True)
+        m['new_magnitude'] = self._measure(axis, buzz)
         self.gcode.respond_info(f"{axis}-New magnitude: {m['new_magnitude']} "
                                 f"on {m['move_msteps']}/{self.microsteps} step move")
         m['move_dir'] = [-1, 'Backward'] if m['new_magnitude'] > m['magnitude'] else [1, 'Forward']
@@ -344,7 +370,7 @@ class MotorsSync:
 
     def _sync(self):
         # Axes synchronization
-        def axes_level(min_ax, max_ax):
+        def axes_level(min_ax, max_ax, buzz=True):
             # Axes leveling by magnitude
             m = self.motion[max_ax]
             s = self.motion[min_ax]
@@ -355,13 +381,13 @@ class MotorsSync:
             force_exit = False
             while True:
                 if not m['move_dir'][1]:
-                    self._detect_move_dir(max_ax)
+                    self._detect_move_dir(max_ax, buzz)
                 steps_delta = int(m['solve_model'](m['model_coeffs'], m['magnitude']) -
                                   m['solve_model'](m['model_coeffs'], s['magnitude']))
                 m['move_msteps'] = min(max(steps_delta, 1), self.max_step_size)
                 self._stepper_move(m['lookuped_steppers'][0], m['move_msteps'] * m['move_len'] * m['move_dir'][0])
                 m['actual_msteps'] += m['move_msteps'] * m['move_dir'][0]
-                m['new_magnitude'] = self._measure(max_ax, True)
+                m['new_magnitude'] = self._measure(max_ax, buzz)
                 self.gcode.respond_info(f"{max_ax}-New magnitude: {m['new_magnitude']} on "
                                         f"{m['move_msteps'] * m['move_dir'][0]}/{self.microsteps} step move")
                 if m['new_magnitude'] > m['magnitude']:
@@ -391,31 +417,31 @@ class MotorsSync:
                 m['magnitude'] = m['new_magnitude']
                 continue
 
-        def inner_sync(axis, check_axis=False):
+        def inner_sync(axis, check_axis=False, buzz=True):
             # If you have any ideas on how to simplify this trash, suggest (c)
             m = self.motion[axis]
             if check_axis:
-                m['new_magnitude'] = self._measure(axis, True)
+                m['new_magnitude'] = self._measure(axis, buzz)
                 self.gcode.respond_info(f"{axis}-New magnitude: {m['new_magnitude']}")
                 m['magnitude'] = m['new_magnitude']
                 return
             if not m['move_dir'][1]:
                 if not m['new_magnitude'] or self.retries:
-                    m['new_magnitude'] = self._measure(axis, True)
+                    m['new_magnitude'] = self._measure(axis, buzz)
                     m['magnitude'] = m['new_magnitude']
                     self.gcode.respond_info(f"{axis}-New magnitude: {m['new_magnitude']}")
-                if not m['actual_msteps'] and self.retry_tolerance and m['new_magnitude'] < self.retry_tolerance:
-                    m['out_msg'] = (f"{axis}-Motors adjusted by {m['actual_msteps']}/{self.microsteps} "
-                                    f"step, magnitude {m['init_magnitude']} --> {m['magnitude']}")
-                    return
-                self._detect_move_dir(axis)
+                # if not m['actual_msteps'] and self.retry_tolerance and m['new_magnitude'] < self.retry_tolerance:
+                #     m['out_msg'] = (f"{axis}-Motors adjusted by {m['actual_msteps']}/{self.microsteps} "
+                #                     f"step, magnitude {m['init_magnitude']} --> {m['magnitude']}")
+                #     return
+                self._detect_move_dir(axis, buzz)
                 return
             m['move_msteps'] = min(max(int(m['solve_model'](m['model_coeffs'], m['magnitude'])), 1), self.max_step_size)
             self._stepper_move(m['lookuped_steppers'][0], m['move_msteps'] * m['move_len'] * m['move_dir'][0])
             move_msteps = m['move_msteps'] * m['move_dir'][0]
             m['actual_msteps'] += move_msteps
             m['check_msteps'] += move_msteps
-            m['new_magnitude'] = self._measure(axis, True)
+            m['new_magnitude'] = self._measure(axis, buzz)
             self.gcode.respond_info(f"{axis}-New magnitude: {m['new_magnitude']} on "
                                     f"{m['move_msteps'] * m['move_dir'][0]}/{self.microsteps} step move")
             if m['new_magnitude'] > m['magnitude']:
@@ -440,17 +466,44 @@ class MotorsSync:
                 return
             m['magnitude'] = m['new_magnitude']
 
+        def extended_sync():
+            self.gcode.respond_info(f'Start extended sync for {", ".join(self.axes[2:])} axes')
+            # To config
+            # along_axis = 'X'
+            # along_edges = itertools.cycle(self.motion[along_axis]['limits'][:2])
+            axes = self.axes[2:]
+            for axis in axes:
+                # self.toolhead.set_position(self.toolhead.get_position(), homing_axes=(0, 1, 2))
+                # self._send(f"G0 {along_axis.upper()}{next(along_edges)} F{self.travel_speed * 60}")
+                # self.toolhead.wait_moves()
+                for _axis in self.axes:
+                    for stepper in self.motion[_axis]['steppers']:
+                        self._stepper_switch(stepper, 0)
+                m = self.motion[axis]
+                while True:
+                    if m['out_msg']:
+                        if all(bool(self.motion[axis]['out_msg']) for axis in axes):
+                            return
+                        break
+                    inner_sync(axis, buzz=True)
+
         if self.sync_method == 'alternately' and len(self.axes) > 1:
-            min_ax, max_ax = sorted(self.motion, key=lambda x: self.motion[x]['init_magnitude'])[:2]
+            min_ax, max_ax = sorted(itertools.islice(self.motion.keys(), 2),
+                                    key=lambda k: self.motion[k]['init_magnitude'])
+            for _axis in self.axes[2:]:
+                for stepper in self.motion[_axis]['steppers']:
+                    self._stepper_switch(stepper, 0)
             axes_level(min_ax, max_ax)
-            axes = self.axes[::-1] if max_ax == self.axes[0] else self.axes
+            axes = self.axes[:2][::-1] if max_ax == self.axes[0] else self.axes[:2]
             for axis in itertools.cycle(axes):
                 m = self.motion[axis]
                 if m['out_msg']:
-                    if all(bool(self.motion[axis]['out_msg']) for axis in self.axes):
-                        return
+                    if all(bool(self.motion[axis]['out_msg']) for axis in axes):
+                        break
                     continue
                 inner_sync(axis)
+            if len(self.axes) > 2:
+                extended_sync()
         elif self.sync_method == 'synchronous' and len(self.axes) > 1:
             check_axis = False
             cycling = itertools.cycle(self.axes)
@@ -463,7 +516,7 @@ class MotorsSync:
                 s = self.motion[sec]
                 if m['out_msg']:
                     if all(bool(self.motion[axis]['out_msg']) for axis in self.axes):
-                        return
+                        break
                     continue
                 if m['magnitude'] < s['magnitude'] and not s['out_msg']:
                     if abs(abs(m['check_msteps']) - abs(s['check_msteps'])) > self.axes_steps_diff:
@@ -473,9 +526,12 @@ class MotorsSync:
                         continue
                 inner_sync(axis, check_axis)
                 check_axis = False
+            if len(self.axes) > 2:
+                extended_sync()
         elif self.sync_method == 'sequential' or len(self.axes) == 1:
             for axis in self.axes:
                 m = self.motion[axis]
+                # To skip _measure() in inner_sync()
                 self._detect_move_dir(axis)
                 while True:
                     if m['out_msg']:
@@ -514,6 +570,9 @@ class MotorsSync:
         self.gcode.respond_info('Motors synchronization started')
         # Init axes
         for axis in self.axes:
+            for _axis in self.axes:
+                for stepper in self.motion[_axis]['steppers']:
+                    self._stepper_switch(stepper, 0)
             init_magnitude = self._measure(axis, True)
             self.motion[axis].update({
                 'move_dir': [1, ''],
@@ -659,7 +718,7 @@ class MotorsSync:
         self.cmd_RUN_SYNC(gcmd)
         m = self.motion[axis]
         min_pos, max_pos, rd = self.lookup_config(
-            m['stepper'], ['position_min', 'position_max', 'rotation_distance'], 0)
+            m['steppers'][0], ['position_min', 'position_max', 'rotation_distance'], 0)
         peak_point = gcmd.get_int('PEAK_POINT', rd * 1250, minval=10000, maxval=999999)
         center = min_pos + ((max_pos - min_pos) / 2)
         pos = itertools.cycle([center - rd, center, center + rd])
