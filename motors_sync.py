@@ -75,9 +75,9 @@ class MotorsSync:
             self.do_level = False
             axes = [a.upper() for a in self.config.getlist('axes')]
         else:
-            raise self.config.error(f"Not supported kinematics '{self.conf_kin}'")
+            raise self.config.error(f"motors_sync: Not supported kinematics '{self.conf_kin}'")
         if any(axis not in valid_axes for axis in axes):
-            raise self.config.error('Invalid axes parameter')
+            raise self.config.error(f"motors_sync: Invalid axes parameter '{','.join(axes)}'")
         self.motion = {axis: {} for axis in axes}
         for axis in axes:
             min_pos, max_pos = self.lookup_config(
@@ -96,7 +96,8 @@ class MotorsSync:
             steppers, lookuped = zip(*[(l.get_name(), l) for l in
                 self.kin.get_steppers() if lo_axis in l.get_name()])
             if len(steppers) not in (2,):
-                raise self.config.error(f'Not supported count of motors: {len(steppers)}')
+                raise self.config.error(f'motors_sync: Not supported'
+                                        f"'{len(steppers)}' count of motors")
             self.motion[axis].update({
                 'do_buzz': True,
                 'steppers': steppers,
@@ -115,8 +116,8 @@ class MotorsSync:
             # Beacon sampling rate > ACCEL_FILTER_THRESHOLD
             self.motion[axis]['chip_filter'] = True
         else:
-            raise self.config.error(f"Unknown accelerometer "
-                                    f"'{chip}' sampling rate")
+            raise self.config.error(
+                f"motors_sync: Unknown accelerometer '{chip}' sampling rate")
 
     def _init_chips(self):
         chips = {}
@@ -126,19 +127,19 @@ class MotorsSync:
             except:
                 chips[axis] = self.config.get('accel_chip')
         if self.conf_kin in LEVELING_KINEMATICS and len(set(chips.values())) > 1:
-            raise self.config.error(f"Accel chips cannot be different "
-                                    f"for a '{self.conf_kin}' kinematics")
+            raise self.config.error(f"motors_sync: Accel chips cannot be different"
+                                    f" for a '{self.conf_kin}' kinematics")
         for axis, chip in chips.items():
             self._init_chip_config(axis, chip)
 
     def _init_chip_filter(self):
         filters = ['median', 'kalman']
-        filter = self.config.getchoice(
-            'chip_filter', {m: m for m in filters}, 'median')
+        filter = self.config.getchoice('chip_filter', {m: m for m in filters}, 'median')
         if filter == 'median':
             window = self.config.getint('median_size', default=3, minval=3, maxval=9)
             if window % 2 == 0:
-                raise self.config.error(f'Window size cannot be even')
+                raise self.config.error(
+                    f"motors_sync: parameter 'median_size' size cannot be even")
             self.chip_filter = MedianFilter(window).process_samples
         elif filter == 'kalman':
             A, H, Q, R, P, x = self.config.getfloatlist(
@@ -155,8 +156,8 @@ class MotorsSync:
             else:
                 self.sync_method = methods[0]
         if self.sync_method in methods[1:] and self.conf_kin not in LEVELING_KINEMATICS:
-            raise self.config.error(
-                f"Invalid sync method: {self.sync_method} for '{self.conf_kin}'")
+            raise self.config.error(f"motors_sync: Invalid sync method: "
+                                    f"{self.sync_method} for '{self.conf_kin}'")
 
     def _init_models(self):
         final_models = {}
@@ -180,18 +181,18 @@ class MotorsSync:
             coeffs_args = [chr(97 + i) for i in range(len(coeffs_vals) + 1)]
             model_coeffs = {arg: float(val) for arg, val in zip(coeffs_args, coeffs_vals)}
             if model not in models:
-                raise self.config.error(f"Invalid model '{model}'")
+                raise self.config.error(f"motors_sync: Invalid model '{model}'")
             if len(model_coeffs) != models[model]['args']['count']:
-                raise self.config.error(f"{model.capitalize()} model requires "
-                                        f"{models[model]['args']['count']} coefficients")
+                raise self.config.error(f"motors_sync: {model.capitalize()} model requires"
+                                        f" {models[model]['args']['count']} coefficients")
             if models[model]['args']['a'] == model_coeffs['a']:
-                raise self.config.error(f"Coefficient 'a' cannot be "
+                raise self.config.error(f"motors_sync: Coefficient 'a' cannot be "
                                         f"{model_coeffs['a']} for a '{model}' model")
             final_models[axis] = [models[model]['func'], list(model_coeffs.values())]
         if self.conf_kin in LEVELING_KINEMATICS and not all(
                 v == final_models[axis] for v in final_models.values()):
-            raise self.config.error(f"Models and coefficients cannot be "
-                                    f"different for a '{self.conf_kin}' kinematics")
+            raise self.config.error(f"motors_sync: Models and coefficients cannot be"
+                                    f" different for a '{self.conf_kin}' kinematics")
         for axis, (model, coeffs) in final_models.items():
             self.motion[axis].update({
                 'solve_model': model,
@@ -266,7 +267,7 @@ class MotorsSync:
             except:
                 continue
         raise self.config.error(
-            f'Unknown fan or fan method: {self.conf_fan}')
+            f"motors_sync: Unknown fan or fan method '{self.conf_fan}'")
 
     def _send(self, params):
         self.gcode._process_commands([params], False)
