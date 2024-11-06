@@ -225,7 +225,7 @@ class MotorsSync:
                 now = self.printer.get_reactor().monotonic()
                 print_time = self.fan.fan.get_mcu().estimated_print_time(now)
                 speed = self.fan.last_speed if on else .0
-                self.fan.fan.set_speed(print_time + PIN_MIN_TIME, speed)
+                self.fan.fan.set_speed(value=speed, print_time=print_time + PIN_MIN_TIME)
         elif method == 'temperature_fan':
             def fan_switch(on=True):
                 if not self.fan:
