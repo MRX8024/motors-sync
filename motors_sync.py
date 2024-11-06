@@ -95,7 +95,7 @@ class MotorsSync:
             move_len = rd / fspr / self.microsteps
             steppers, lookuped = zip(*[(l.get_name(), l) for l in
                 self.kin.get_steppers() if lo_axis in l.get_name()])
-            if len(steppers) > 2:
+            if len(steppers) not in (2,):
                 raise self.config.error(f'Not supported count of motors: {len(steppers)}')
             self.motion[axis].update({
                 'do_buzz': True,
