@@ -93,6 +93,14 @@ class MotorsSync:
             if len(steppers) not in (2,):
                 raise self.config.error(f'motors_sync: Not supported'
                                         f"'{len(steppers)}' count of motors")
+            for _axis in self.motion:
+                cf_msteps = self.motion[_axis]['microsteps']
+                for stepper in steppers:
+                    st_msteps = self.lookup_config(stepper, ['microsteps'], None)
+                    if cf_msteps > st_msteps:
+                        raise self.config.error(
+                            f'motors_sync: Invalid microsteps count, cannot be'
+                            f' more than steppers, {cf_msteps} vs {st_msteps}')
             self.motion[axis].update({
                 'do_buzz': True,
                 'steppers': steppers,
