@@ -679,128 +679,154 @@ class MotorsSync:
     cmd_SYNC_MOTORS_CALIBRATE_help = 'Calibrate synchronization process'
     def cmd_SYNC_MOTORS_CALIBRATE(self, gcmd):
         # Calibrate sync model and model coeffs
-        from datetime import datetime
-        from textwrap import wrap
-        import multiprocessing
-        import matplotlib.pyplot as plt, matplotlib.ticker as ticker
-        from scipy.optimize import curve_fit
+        try:
+            cal.run_calibrate(gcmd)
+        except:
+            cal = MotorsSyncCalibrate(self)
+            cal.run_calibrate(gcmd)
 
-        RESULTS_FOLDER = os.path.expanduser('~/printer_data/config/adxl_results/motors_sync')
-        RMSE_LIMIT = 20000
+    def get_status(self, eventtime=None, user=False):
+        if not user:
+            return self.status.get_status(eventtime)
+        else:
+            now = self.printer.get_reactor().monotonic()
+            return bool(list(self.status.get_status(now).values())[0])
 
-        def check_export_path(path):
-            if not os.path.exists(path):
-                try:
-                    os.makedirs(path)
-                except OSError as e:
-                    raise self.gcode.error(f'Error generate path {path}: {e}')
 
-        def linear_model(x, a, b):
-            return a*x + b
+class MotorsSyncCalibrate:
+    def __init__(self, sync):
+        self._load_modules()
+        self.sync = sync
+        self.gcode = sync.gcode
+        self.path = os.path.expanduser('~/printer_data/config/adxl_results/motors_sync')
+        self.check_export_path()
 
-        def quadratic_model(x, a, b, c):
-            return a*x**2 + b*x + c
+    @classmethod
+    def _load_modules(cls):
+        globals().update({
+            'wrap': __import__('textwrap', fromlist=['wrap']).wrap,
+            'multiprocessing': __import__('multiprocessing'),
+            'plt': __import__('matplotlib.pyplot', fromlist=['']),
+            'ticker': __import__('matplotlib.ticker', fromlist=['']),
+            'curve_fit': __import__('scipy.optimize', fromlist=['curve_fit']).curve_fit
+        })
 
-        def power_model(x, a, b):
-            return a * np.power(x, b)
+    def check_export_path(self):
+        if os.path.exists(self.path):
+            return
+        try:
+            os.makedirs(self.path)
+        except OSError as e:
+            raise self.gcode.error(
+                f'Error generate path {self.path}: {e}')
 
-        def root_model(x, a, b):
-            return a * np.sqrt(x) + b
+    def linear_model(x, a, b):
+        return a*x + b
 
-        def hyperbolic_model(x, a, b):
-            return a / x + b
+    def quadratic_model(x, a, b, c):
+        return a*x**2 + b*x + c
 
-        def exponential_model(x, a, b, c):
-            return a * np.exp(b * x) + c
+    def power_model(x, a, b):
+        return a * np.power(x, b)
 
-        models = {
-            'Linear': linear_model,
-            'Quadratic': quadratic_model,
-            'Power': power_model,
-            'Root': root_model,
-            'Hyperbolic': hyperbolic_model,
-            'Exponential': exponential_model
-        }
+    def root_model(x, a, b):
+        return a * np.sqrt(x) + b
 
-        linestyles = {
-            'Linear': '-.',
-            'Quadratic': '--',
-            'Power': ':',
-            'Root': '--',
-            'Hyperbolic': '-.',
-            'Exponential': ':'
-        }
+    def hyperbolic_model(x, a, b):
+        return a / x + b
 
-        colors = {
-            'Linear': '#DF8816',  # Dark Orange
-            'Quadratic': 'green',
-            'Power': 'cyan',
-            'Root': 'magenta',
-            'Hyperbolic': 'purple',
-            'Exponential': 'blue'
-        }
+    def exponential_model(x, a, b, c):
+        return a * np.exp(b * x) + c
 
-        def find_best_func(x_data, y_data, accel_chip='', msteps=16):
-            maxfev = 999999999
-            params = {}
-            y_pred = {}
-            rmse = {}
-            for name, model in models.items():
-                params[name], _ = curve_fit(model, x_data, y_data, maxfev=maxfev)
-                y_pred[name] = model(x_data, *params[name])
-                rmse[name] = np.sqrt(np.mean((y_data - y_pred[name]) ** 2))
-            out = {}
-            for name, _ in models.items():
-                params_str = ','.join([f'{params[name][i]:.10f}' for i in range(len(params[name]))])
-                out[name] = {'val': rmse[name], 'params': params[name], 'equation': params_str}
-            sorted_out = sorted(out.keys(), key=lambda x: out[x]['val'])
-            string_cmd = ['Functions RMSE and coefficients']
-            for num, name in enumerate(sorted_out):
-                string_cmd.append(f'{name}: RMSE {out[name]["val"]:.0f} coeffs: {out[name]["equation"]}')
-            msg = plotter(out, sorted_out, x_data, y_data, accel_chip, msteps)
-            string_cmd.insert(0, msg)
-            return string_cmd
+    models = {
+        'Linear': linear_model,
+        'Quadratic': quadratic_model,
+        'Power': power_model,
+        'Root': root_model,
+        'Hyperbolic': hyperbolic_model,
+        'Exponential': exponential_model
+    }
 
-        def plotter(out, sorted_out, x_data, y_data, accel_chip, msteps):
-            # Plotting
-            fig, ax = plt.subplots()
-            ax.scatter(x_data, y_data, label='Samples', color='red', zorder=2, s=10)
-            x_fit = np.linspace(min(x_data), max(x_data), 200)
-            for num, name in enumerate(sorted_out):
-                if out[name]['val'] < RMSE_LIMIT:
-                    string_graph = f"{name} RMSE: {out[name]['val']:.0f}"
-                    linestyle = linestyles[name]
-                    linewidth = 1
-                    color = colors[name]
-                    ax.plot(x_fit, models[name](x_fit, *out[name]['params']),
-                            label=string_graph, linestyle=linestyle, linewidth=linewidth, color=color)
-            ax.legend(loc='lower right', fontsize=6, framealpha=1, ncol=1)
-            now = datetime.now().strftime('%Y%m%d_%H%M%S')
-            lognames = [now, '_' + accel_chip]
-            title = f"Dependency of desynchronization and functions ({''.join(lognames)})"
-            ax.set_title('\n'.join(wrap(title, 66)), fontsize=10)
-            ax.set_xlabel(f'Microsteps: 1/{msteps}')
-            ax.set_xticks(np.arange(0, max(x_data) + 2.5, 2.5))
-            ax.xaxis.set_minor_locator(ticker.MultipleLocator(2.5))
-            ax.xaxis.set_minor_locator(ticker.AutoMinorLocator())
-            ax.set_ylabel('Magnitude')
-            ax.ticklabel_format(axis='y', style='scientific', scilimits=(0, 0))
-            ax.yaxis.set_minor_locator(ticker.AutoMinorLocator())
-            ax.grid(which='major', color='grey')
-            ax.grid(which='minor', color='lightgrey')
-            check_export_path(RESULTS_FOLDER)
-            png_path = os.path.join(RESULTS_FOLDER, f'interactive_plot_{accel_chip}_{now}.png')
-            plt.savefig(png_path, dpi=1000)
-            return f'Access to interactive plot at: {png_path}'
+    linestyles = {
+        'Linear': '-.',
+        'Quadratic': '--',
+        'Power': ':',
+        'Root': '--',
+        'Hyperbolic': '-.',
+        'Exponential': ':'
+    }
 
-        repeats = gcmd.get_int('REPEATS', 10, minval=1, maxval=100)
-        axis = gcmd.get_int('AXIS', next(iter(self.motion)))
-        self.gcode.respond_info(f'Calibration started on {axis} axis with {repeats} repeats', True)
-        self.gcode.respond_info('Synchronizing before calibration...', True)
-        self.cmd_SYNC_MOTORS(gcmd, True)
-        m = self.motion[axis]
-        rd = self.lookup_config(m['steppers'][0], ['rotation_distance'], 0)
+    colors = {
+        'Linear': '#DF8816',  # Dark Orange
+        'Quadratic': 'green',
+        'Power': 'cyan',
+        'Root': 'magenta',
+        'Hyperbolic': 'purple',
+        'Exponential': 'blue'
+    }
+
+    def find_best_func(self, x_data, y_data, accel_chip='', msteps=16):
+        maxfev = 999999999
+        params = {}
+        y_pred = {}
+        rmse = {}
+        for name, model in self.models.items():
+            params[name], _ = curve_fit(model, x_data, y_data, maxfev=maxfev)
+            y_pred[name] = model(x_data, *params[name])
+            rmse[name] = np.sqrt(np.mean((y_data - y_pred[name]) ** 2))
+        out = {}
+        for name, _ in self.models.items():
+            params_str = ','.join([f'{params[name][i]:.10f}' for i in range(len(params[name]))])
+            out[name] = {'val': rmse[name], 'params': params[name], 'equation': params_str}
+        sorted_out = sorted(out.keys(), key=lambda x: out[x]['val'])
+        string_cmd = ['Functions RMSE and coefficients']
+        for num, name in enumerate(sorted_out):
+            string_cmd.append(f'{name}: RMSE {out[name]["val"]:.0f} coeffs: {out[name]["equation"]}')
+        msg = self.plotter(out, sorted_out, x_data, y_data, accel_chip, msteps)
+        string_cmd.insert(0, msg)
+        return string_cmd
+
+    def plotter(self, out, sorted_out, x_data, y_data, accel_chip, msteps, rmse_lim=20000):
+        # Plotting
+        fig, ax = plt.subplots()
+        ax.scatter(x_data, y_data, label='Samples', color='red', zorder=2, s=10)
+        x_fit = np.linspace(min(x_data), max(x_data), 200)
+        for num, name in enumerate(sorted_out):
+            if out[name]['val'] < rmse_lim:
+                string_graph = f"{name} RMSE: {out[name]['val']:.0f}"
+                linestyle = self.linestyles[name]
+                linewidth = 1
+                color = self.colors[name]
+                ax.plot(x_fit, self.models[name](x_fit, *out[name]['params']),
+                        label=string_graph, linestyle=linestyle, linewidth=linewidth, color=color)
+        ax.legend(loc='lower right', fontsize=6, framealpha=1, ncol=1)
+        now = datetime.now().strftime('%Y%m%d_%H%M%S')
+        lognames = [now, '_' + accel_chip]
+        title = f"Dependency of desynchronization and functions ({''.join(lognames)})"
+        ax.set_title('\n'.join(wrap(title, 66)), fontsize=10)
+        ax.set_xlabel(f'Microsteps: 1/{msteps}')
+        ax.set_xticks(np.arange(0, max(x_data) + 2.5, 2.5))
+        ax.xaxis.set_minor_locator(ticker.MultipleLocator(2.5))
+        ax.xaxis.set_minor_locator(ticker.AutoMinorLocator())
+        ax.set_ylabel('Magnitude')
+        ax.ticklabel_format(axis='y', style='scientific', scilimits=(0, 0))
+        ax.yaxis.set_minor_locator(ticker.AutoMinorLocator())
+        ax.grid(which='major', color='grey')
+        ax.grid(which='minor', color='lightgrey')
+        png_path = os.path.join(self.path, f'interactive_plot_{accel_chip}_{now}.png')
+        plt.savefig(png_path, dpi=1000)
+        return f'Access to interactive plot at: {png_path}'
+
+    def run_calibrate(self, gcmd):
+        repeats = gcmd.get_int('REPEATS', 10, minval=2, maxval=100)
+        axis = gcmd.get_int('AXIS', next(iter(self.sync.motion)))
+        m = self.sync.motion[axis]
+        rd = self.sync.lookup_config(m['steppers'][0], ['rotation_distance'], 0)
         peak_point = gcmd.get_int('PEAK_POINT', rd * 1250, minval=10000, maxval=999999)
+        self.gcode.respond_info(f'Calibration started on {axis} axis with '
+                                f'{repeats} repeats, magnitude 0 --> {peak_point}', True)
+        self.gcode.respond_info('Synchronizing before calibration...', True)
+        self.sync.cmd_SYNC_MOTORS(gcmd, True)
         loop_pos = itertools.cycle([m['limits'][2] - rd, m['limits'][2], m['limits'][2] + rd])
         max_steps = 0
         invs = [1, -1]
@@ -811,7 +837,7 @@ class MotorsSync:
             m['new_magnitude'] = m['magnitude']
             self.gcode.respond_info(
                 f"Repeats: {i}/{repeats} Try rise to {peak_point:.2f} and lower to ~0 magnitude", True)
-            self._send(f'G0 {axis}{next(loop_pos)} F{self.travel_speed * 60}')
+            self.sync._send(f'G0 {axis}{next(loop_pos)} F{self.sync.travel_speed * 60}')
             do_init = True
             for inv in invs:
                 while True:
@@ -823,43 +849,36 @@ class MotorsSync:
                                 max_steps += m['move_msteps']
                             y_samples = np.append(y_samples, m['new_magnitude'])
                         m['magnitude'] = m['new_magnitude']
-                        self._stepper_move(m['lookuped_steppers'][0], m['move_msteps'] * m['move_len'] * inv)
+                        self.sync._stepper_move(m['lookuped_steppers'][0], m['move_msteps'] * m['move_len'] * inv)
                         m['actual_msteps'] += m['move_msteps'] * inv
-                        m['new_magnitude'] = self._measure(axis)
+                        m['new_magnitude'] = self.sync._measure(axis)
                         self.gcode.respond_info(f"{axis}-New magnitude: {m['new_magnitude']} on "
                                                 f"{m['move_msteps'] * inv}/{m['microsteps']} step move", True)
                         do_init = False
                     else:
                         break
             # Move on previous microstep
-            self._stepper_move(m['lookuped_steppers'][0], m['move_msteps'] * m['move_len'])
+            self.sync._stepper_move(m['lookuped_steppers'][0], m['move_msteps'] * m['move_len'])
             m['actual_msteps'] += m['move_msteps']
         y_samples = np.sort(y_samples)
         x_samples = np.linspace(0.01, max_steps, len(y_samples))
-        if self.debug:
+        if self.sync.debug:
             self.gcode.respond_info(f"Y Samples: {', '.join([str(i) for i in y_samples])}", True)
             self.gcode.respond_info(f"X samples: {', '.join([f'{i:.2f}' for i in x_samples])}", True)
 
-        def _samples_processing():
+        def samples_processing():
             try:
                 os.nice(10)
             except:
                 pass
-            msg = find_best_func(x_samples, y_samples, m['chip'], m['microsteps'])
+            msg = self.find_best_func(x_samples, y_samples, m['chip'], m['microsteps'])
             for line in msg:
                 self.gcode.respond_info(str(line), True)
 
         # Run plotter
-        proces = multiprocessing.Process(target=_samples_processing)
+        proces = multiprocessing.Process(target=samples_processing)
         proces.daemon = False
         proces.start()
-
-    def get_status(self, eventtime=None, user=False):
-        if not user:
-            return self.status.get_status(eventtime)
-        else:
-            now = self.printer.get_reactor().monotonic()
-            return bool(list(self.status.get_status(now).values())[0])
 
 
 class MedianFilter:
