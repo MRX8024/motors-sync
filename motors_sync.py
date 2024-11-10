@@ -175,13 +175,11 @@ class MotorsSync:
             'exponential': {'args': {'count': 3, 'a': 0}, 'func': self.exponential_model}
         }
         for axis in self.motion:
-            try:
-                model = self.config.get(f'model_{axis.lower()}').lower()
-            except:
+            model = self.config.get(f'model_{axis.lower()}', '').lower()
+            if not model:
                 model = self.config.get('model', 'linear').lower()
-            try:
-                coeffs_vals = self.config.getfloatlist(f'model_coeffs_{axis.lower()}')
-            except:
+            coeffs_vals = self.config.getfloatlist(f'model_coeffs_{axis.lower()}', '')
+            if not coeffs_vals:
                 coeffs_vals = self.config.getfloatlist('model_coeffs', default=[20000, 0])
             coeffs_args = [chr(97 + i) for i in range(len(coeffs_vals) + 1)]
             model_coeffs = {arg: float(val) for arg, val in zip(coeffs_args, coeffs_vals)}
