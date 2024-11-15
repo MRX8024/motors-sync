@@ -10,23 +10,9 @@ fi
 
 module_name=motors_sync.py
 module_path=~/klipper/klippy/extras/
-cfg_incl_path=~/printer_data/config/printer.cfg
 
 # Linking
 ln -sf "$repo_path/$module_name" $module_path
-
-# Include [force_move] in printer.cfg
-if [ -f "$cfg_incl_path" ]; then
-    if ! grep -q "^\[force_move\]$" "$cfg_incl_path"; then
-        sudo service klipper stop
-        sed -i "1i\enable_force_move: True" "$cfg_incl_path"
-        sed -i "1i\[force_move\]" "$cfg_incl_path"
-
-        sudo service klipper start
-    else
-        echo "Including [force_move] aborted, [force_move] already exists in $cfg_incl_path"
-    fi
-fi
 
 blk_path=~/printer_data/config/moonraker.conf
 # Include update block in moonraker.conf
