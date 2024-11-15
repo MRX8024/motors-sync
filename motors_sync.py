@@ -14,7 +14,7 @@ MEASURE_DELAY = 0.05            # Delay between damped oscillations and measurem
 ACCEL_FILTER_THRESHOLD = 3000   # Accelerometer filter disabled at lower sampling rate
 AXES_LEVEL_DELTA = 2000         # Magnitude difference between axes
 LEVELING_KINEMATICS = (         # Kinematics with interconnected axes
-    ['corexy'])
+    ['corexy', 'limited_corexy'])
 
 class MotorsSync:
     def __init__(self, config):
