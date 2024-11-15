@@ -81,9 +81,10 @@ accel_chip:
 #    The maximum number of microsteps that the motor can take move at time,
 #    to achieve the planned magnitude.
 #axes_steps_diff: 4
-#    Only for synchronous sync method: microstep difference between two
-#    axes to trigger an additional check of the current magnitude on the
-#    weaker axis. The typical and minimum value - max_step_size + 1.
+#    Microstep difference between two axes in synchronous method, or on
+#    aligning axes in alternately method, to trigger an additional check of
+#    the current magnitude on the weaker axis. 
+#    The typical and minimum value - max_step_size + 1.
 #retry_tolerance: 0
 #    The forced threshold to which a pair of stepper motors on one belt
 #    will have to lower the magnitude of the oscillations. It's recommended

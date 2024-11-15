@@ -468,13 +468,21 @@ class MotorsSync:
             self.gcode.respond_info(f'Start axes level, delta: {delta:.2f}', True)
             force_exit = False
             while True:
+                # m['axes_steps_diff'] == s['axes_steps_diff']
+                if abs(abs(m['check_msteps']) - abs(s['check_msteps'])) > m['axes_steps_diff']:
+                    s['new_magnitude'] = self._measure(min_ax)
+                    self.gcode.respond_info(f"{min_ax}-New magnitude: {s['new_magnitude']}", True)
+                    s['magnitude'] = s['new_magnitude']
+                    m['check_msteps'], s['check_msteps'] = 0, 0
                 if not m['move_dir'][1]:
                     self._detect_move_dir(max_ax)
                 steps_delta = int(m['solve_model'](m['model_coeffs'], m['magnitude']) -
                                   m['solve_model'](m['model_coeffs'], s['magnitude']))
                 m['move_msteps'] = min(max(steps_delta, 1), m['max_step_size'])
                 self._stepper_move(m['lookuped_steppers'][0], m['move_msteps'] * m['move_len'] * m['move_dir'][0])
-                m['actual_msteps'] += m['move_msteps'] * m['move_dir'][0]
+                move_msteps = m['move_msteps'] * m['move_dir'][0]
+                m['actual_msteps'] += move_msteps
+                m['check_msteps'] += move_msteps
                 m['new_magnitude'] = self._measure(max_ax)
                 self.gcode.respond_info(f"{max_ax}-New magnitude: {m['new_magnitude']} on "
                                         f"{m['move_msteps'] * m['move_dir'][0]}/{m['microsteps']} step move", True)
