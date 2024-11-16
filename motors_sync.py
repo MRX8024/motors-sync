@@ -28,7 +28,6 @@ class MotorsSync:
         # Read config
         self._init_axes()
         self._init_chips()
-        self._init_chip_filter()
         self._init_sync_method()
         self._init_models()
         self._init_fan()
@@ -110,16 +109,40 @@ class MotorsSync:
                 'move_len': move_len
             })
 
+    def _init_chip_filter(self, axis):
+        filters = ['def', 'median', 'kalman']
+        fd = {m: m for m in filters}
+        filter = self.config.getchoice(f'chip_filter_{axis.lower()}', fd, 'def').lower()
+        if filter == 'def':
+            filter = self.config.getchoice('chip_filter', fd, 'median').lower()
+        if filter == 'median':
+            window = self.config.getint(f'median_size_{axis.lower()}', '', minval=3, maxval=9)
+            if not window:
+                window = self.config.getint('median_size', default=3, minval=3, maxval=9)
+            if window % 2 == 0:
+                raise self.config.error(
+                    f"motors_sync: parameter 'median_size' cannot be even")
+            self.motion[axis]['chip_filter'] = MedianFilter(window).process_samples
+        elif filter == 'kalman':
+            coeffs = self.config.getfloatlist(
+                f'kalman_coeffs_{axis.lower()}', tuple('' for _ in range(6)), count=6)
+            if not all(coeffs):
+                coeffs = self.config.getfloatlist(
+                    'kalman_coeffs', tuple((1.1, 1., 1e-1, 1e-2, .5, 1.)), count=6)
+            self.motion[axis]['chip_filter'] = KalmanLiteFilter(*coeffs).process_samples
+
     def _init_chip_config(self, axis, chip):
         chip_config = self.printer.lookup_object(chip)
         self.motion[axis]['chip'] = chip
         self.motion[axis]['chip_config'] = chip_config
         if hasattr(chip_config, 'data_rate'):
-            self.motion[axis]['chip_filter'] = (
-                chip_config.data_rate > ACCEL_FILTER_THRESHOLD)
+            if chip_config.data_rate > ACCEL_FILTER_THRESHOLD:
+                self._init_chip_filter(axis)
+            else:
+                self.motion[axis]['chip_filter'] = lambda data: data
         elif chip == 'beacon':
             # Beacon sampling rate > ACCEL_FILTER_THRESHOLD
-            self.motion[axis]['chip_filter'] = True
+            self._init_chip_filter(axis)
         else:
             raise self.config.error(
                 f"motors_sync: Unknown accelerometer '{chip}' sampling rate")
@@ -127,29 +150,14 @@ class MotorsSync:
     def _init_chips(self):
         chips = {}
         for axis in self.motion:
-            try:
-                chips[axis] = self.config.get(f'accel_chip_{axis.lower()}')
-            except:
+            chips[axis] = self.config.get(f'accel_chip_{axis.lower()}', '')
+            if not chips[axis]:
                 chips[axis] = self.config.get('accel_chip')
         if self.conf_kin in LEVELING_KINEMATICS and len(set(chips.values())) > 1:
             raise self.config.error(f"motors_sync: Accel chips cannot be different"
                                     f" for a '{self.conf_kin}' kinematics")
         for axis, chip in chips.items():
             self._init_chip_config(axis, chip)
-
-    def _init_chip_filter(self):
-        filters = ['median', 'kalman']
-        filter = self.config.getchoice('chip_filter', {m: m for m in filters}, 'median')
-        if filter == 'median':
-            window = self.config.getint('median_size', default=3, minval=3, maxval=9)
-            if window % 2 == 0:
-                raise self.config.error(
-                    f"motors_sync: parameter 'median_size' size cannot be even")
-            self.chip_filter = MedianFilter(window).process_samples
-        elif filter == 'kalman':
-            A, H, Q, R, P, x = self.config.getfloatlist(
-                'kalman_coeffs', count=6, default=[1.1, 1., 1e-1, 1e-2, .5, 1.])
-            self.chip_filter = KalmanLiteFilter(A, H, Q, R, P, x).process_samples
 
     def _init_sync_method(self):
         methods = ['sequential', 'alternately', 'synchronous', 'default']
@@ -401,9 +409,8 @@ class MotorsSync:
         z_axis = np.mean(np.abs(cut), axis=0).argmax()
         xy_vect = np.delete(vect, z_axis, axis=1)
         magnitudes = np.linalg.norm(xy_vect, axis=1)
-        if self.motion[axis]['chip_filter']:
-            # Add median or Kalman filter
-            magnitudes = self.chip_filter(magnitudes)
+        # Add median, Kalman or none filter
+        magnitudes = self.motion[axis]['chip_filter'](magnitudes)
         # Calculate static noise
         static = np.mean(magnitudes[vect_len // 4:vect_len // 2])
         # Return avg of 5 max magnitudes with deduction static
