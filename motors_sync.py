@@ -293,10 +293,10 @@ class MotorsSync:
             gd[axis] = {}
             for var, p in vb.items():
                 param = self.config.getint(f'{var}_{axis.lower()}',
-                        default=None, minval=p['min'], maxval=p['max'])
+                         default=None, minval=p['min'], maxval=p['max'])
                 if param is None:
                     param = self.config.getint(f'{var}',
-                            default=p['def'], minval=p['min'], maxval=p['max'])
+                             default=p['def'], minval=p['min'], maxval=p['max'])
                 gd[axis][var] = param
                 # Init 'max_step_size': 'max' value = microsteps / 2
                 if var == 'microsteps':
@@ -630,14 +630,15 @@ class MotorsSync:
             self.axes = [axis.upper() for axis in axes_from_gcmd]
         else:
             self.axes = list(self.motion.keys())
+        chip = gcmd.get(f'ACCEL_CHIP', None)
         for axis in self.axes:
-            chip = gcmd.get(f'ACCEL_CHIP_{axis}', '')
-            if chip and chip != self.motion[axis]['chip']:
+            a_chip = gcmd.get(f'ACCEL_CHIP_{axis}', chip)
+            if a_chip and a_chip != self.motion[axis]['chip']:
                 try:
-                    self.printer.lookup_object(chip)
+                    self.printer.lookup_object(a_chip)
                 except Exception as e:
                     raise self.gcode.error(e)
-                self._init_chip_config(axis, chip)
+                self._init_chip_config(axis, a_chip)
         for param in ['retry_tolerance', 'retries']:
             exclude = set()
             for axis in self.motion:
