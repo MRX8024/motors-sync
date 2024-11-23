@@ -284,7 +284,7 @@ class MotorsSync:
         vb = { # Variables dict
             'microsteps': {'def': 16, 'min': 4, 'max': 256},
             'max_step_size': {'def': 3, 'min': 1, 'max': None},
-            'axes_steps_diff': {'def': None, 'min': None, 'max': 999999},
+            'axes_steps_diff': {'def': None, 'min': 1, 'max': 999999},
             'retry_tolerance': {'def': 0, 'min': 0, 'max': 999999},
             'retries': {'def': 0, 'min': 0, 'max': 10},
         }
@@ -301,10 +301,9 @@ class MotorsSync:
                 # Init 'max_step_size': 'max' value = microsteps / 2
                 if var == 'microsteps':
                     vb['max_step_size']['max'] = gd[axis]['microsteps'] / 2
-                # Init 'axes_steps_diff': 'def' and 'min' values = max_step_size + 1
+                # Init 'axes_steps_diff': 'def' value = max_step_size + 1
                 elif var == 'max_step_size':
-                    vb['axes_steps_diff']['def'] = vb['axes_steps_diff']['min']\
-                        = gd[axis]['max_step_size'] + 1
+                    vb['axes_steps_diff']['def'] = gd[axis]['max_step_size'] + 1
         common_items = set.intersection(*(set(d.items()) for d in gd.values()))
         exclude = [dict(set(d.items()) - common_items) for d in gd.values()
                    if set(d.items()) - common_items]
@@ -476,7 +475,7 @@ class MotorsSync:
             force_exit = False
             while True:
                 # m['axes_steps_diff'] == s['axes_steps_diff']
-                if abs(abs(m['check_msteps']) - abs(s['check_msteps'])) > m['axes_steps_diff']:
+                if abs(abs(m['check_msteps']) - abs(s['check_msteps'])) >= m['axes_steps_diff']:
                     s['new_magnitude'] = self._measure(min_ax)
                     self.gcode.respond_info(f"{min_ax}-New magnitude: {s['new_magnitude']}", True)
                     s['magnitude'] = s['new_magnitude']
@@ -598,7 +597,7 @@ class MotorsSync:
                     continue
                 if m['magnitude'] < s['magnitude'] and not s['out_msg']:
                     # m['axes_steps_diff'] == s['axes_steps_diff']
-                    if abs(abs(m['check_msteps']) - abs(s['check_msteps'])) > m['axes_steps_diff']:
+                    if abs(abs(m['check_msteps']) - abs(s['check_msteps'])) >= m['axes_steps_diff']:
                         check_axis = True
                         m['check_msteps'], s['check_msteps'] = 0, 0
                     else:
