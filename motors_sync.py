@@ -210,28 +210,28 @@ class MotorsSync:
                 'model_coeffs': coeffs
             })
 
-    @classmethod
-    def polynomial_model(cls, coeffs, fx):
+    @staticmethod
+    def polynomial_model(coeffs, fx):
         sol = np.roots([*coeffs[:-1], coeffs[-1] - fx])
         return max(sol.real)
 
-    @classmethod
-    def power_model(cls, coeffs, fx):
+    @staticmethod
+    def power_model(coeffs, fx):
         a, b = coeffs
         return (fx / a) ** (1 / b)
 
-    @classmethod
-    def root_model(cls, coeffs, fx):
+    @staticmethod
+    def root_model(coeffs, fx):
         a, b = coeffs
         return (fx**2 - 2*b*fx + b**2) / a**2
 
-    @classmethod
-    def hyperbolic_model(cls, coeffs, fx):
+    @staticmethod
+    def hyperbolic_model(coeffs, fx):
         a, b = coeffs
         return a / (fx - b)
 
-    @classmethod
-    def exponential_model(cls, coeffs, fx):
+    @staticmethod
+    def exponential_model(coeffs, fx):
         a, b, c = coeffs
         return np.log((fx - c) / a) / b
 
@@ -714,8 +714,8 @@ class MotorsSyncCalibrate:
         self.path = os.path.expanduser('~/printer_data/config/adxl_results/motors_sync')
         self.check_export_path()
 
-    @classmethod
-    def _load_modules(cls):
+    @staticmethod
+    def _load_modules():
         globals().update({
             'wrap': __import__('textwrap', fromlist=['wrap']).wrap,
             'multiprocessing': __import__('multiprocessing'),
@@ -951,8 +951,8 @@ class StatisticsManager:
         # Checks
         self.check_log()
 
-    @classmethod
-    def _load_modules(cls):
+    @staticmethod
+    def _load_modules():
         for module in ['csv', 'ast']:
             globals()[module] = __import__(module)
 
