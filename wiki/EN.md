@@ -1,55 +1,73 @@
-## Welcome to the stepper motors synchronization project for AWD Systems
-
-## About the Project:
+## Welcome to the stepper motor synchronization project for AWD systems
 
 ### Currently, the program supports the following kinematics:
-`CoreXY / Cartesian` `4 WD`
+`CoreXY` / `Cartesian` `4 WD`
 
-The synchronization method involves measuring the displacement
-(oscillation) of the print head (carriage) when the second stepper motor,
-located on the same belt as the first one, is activated. The second motor
-moves to the nearest full step, thereby stretching and relaxing the belt
-on both sides of the loop due to the first motor holding the belt. The
-impacts are measured by an accelerometer permanently located on the
-carriage, depending on the kinematic type. Synchronization is 
-software-based and is reset when any of the stepper motors on the belt
-loop are turned off.
+### How does it work?
+In AWD systems, a single belt is driven by two motors and split into two
+loops by pulleys. When activated, motors fail to restore their previous
+position correctly: one loop stretches while the other slackens.
+Synchronization aligns the tension of these two loops. When one motor is
+disabled, loop tension equalizes, and its rotor rotates. Upon reactivation,
+this rotor returns to its previous position, causing a distinct impact.
+The impact's force depends on the tension difference between the loops.
+The greater the difference, the stronger the impact; with minimal
+difference, there is no impact. The impact magnitude is measured by an
+accelerometer fixed on the carriage, depending on the kinematic type.
+Synchronization is software-based and resets when any stepper motor in the
+belt loop is disabled. The script determines the rotor's rotation direction
+and gradually adjusts its position until the impact magnitude decreases.
+If the magnitude starts to increase, it reverts to the previous position,
+completing synchronization or performs additional iterations to reach a
+set magnitude threshold n-times.
 
-The script determines the direction of movement to reduce the carriage's
-oscillations. It adjusts the microsteps until the amount of displacement
-decreases, i.e., until the motor starts stretching the belt in the 
-opposite direction. In this case, calibration ends at the microstep with
-the smallest impact or performs additional iterations to achieve the set
-oscillation threshold a specified number of times.
+### Notes:
+* It is recommended to securely mount the accelerometer at the closest
+  point to the carriage belt attachment. Mounting it elsewhere, like
+  using a CAN-board or a Beacon accelerometer on a flexible mount, may
+  distort measurements.
 
-Notes:
-1. Do not turn on the hotend heating during synchronization. Working
-   the fan (in general, any fan in the printer) can interfere with
-   correct and more accurate measurement. You can measure/compare noises
-   with the standard klipper command - [MEASURE_AXES_NOISE
-   ](https://www.klipper3d.org/G-Codes.html#measure_axes_noise)
-2. We not recommend to use the `lis2dw` accelerometer due to the low
-   sampling rate, it can poorly detect magnitude peaks, however, its
-   operation has been optimized by disabling samples filtering.
+* Avoid using the `lis2dw` accelerometer due to its low sampling rate,
+  which may poorly detect vibration peaks, however its operation has been
+  optimized by disabling data filtering.
 
-### 1. Installing the calibration script on the printer host -
+* Do not enable the hotend heater during synchronization. A running fan
+  (or any fan in the printer) may interfere with accurate measurement.
+  Compare noise levels using Klipper's standard command:
+  [MEASURE_AXES_NOISE](https://www.klipper3d.org/G-Codes.html#measure_axes_noise).
 
+* In most cases, avoid setting the sync parameter `microsteps` above 16
+  for a 20t pulley; the magnitude difference between rotor positions will
+  be negligible, potentially leading to false calibration.
+
+### Installing the calibration script on the printer host
 ```
 cd ~
 git clone https://github.com/MRX8024/motors-sync
 bash ~/motors-sync/install.sh
 ```
 
-2. Add a section to the configuration file and partially configure it for
-the first measurement -
+### Configuration
+Most parameters support self-assignment to an axis, e.g., for `axes: x,y`,
+the parameter `accel_chip` can be described as `accel_chip_x` and
+`accel_chip_y`. However, `accel_chip` remains the default parameter if no
+axis-specific value is defined. This is relevant for Cartesian kinematics,
+which may have different implementations of drives.
+
+Parameters starting with `#` are optional. They have default values listed
+next to them but can be adjusted for different printer configurations.
+It is recommended to review all configuration parameters before using the
+program.
+
+Add the following section to the printer's configuration file and partially
+configure it for the first measurement:
+
 ```
 [motors_sync]
 axes: x,y
 #    Axes on which calibration will be performed.
 accel_chip:
-#    Accelerometers for vibration collection: adxl345 / mpu9250 / lis2dw,
-#    etc. Are indicated general or for axis on which calibration is
-#    performed, for example - accel_chip_x or accel_chip_y.
+#    Accelerometer for vibrations collection: adxl345 / mpu9250 etc.
 #chip_filter: median
 #    Filter type for data from the accelerometer: 'median' works well in
 #    most cases, but some particularly noisy printers (fans, etc.) may
@@ -59,32 +77,28 @@ accel_chip:
 #kalman_coeffs: 1.1, 1., 1e-1, 1e-2, .5, 1.
 #    Simple coefficients describing the kalman filter.
 #microsteps: 16
-#    Maximum microstepping displacement of the stepper motor rotor. It's
-#    not necessary to increase the value above 16 with 20t pulley, these
-#    fluctuations are elusive.
+#    Maximum microstepping displacement of the stepper motor rotor.
 #sync_method: default
 #    Methods for synchronizing two axes on interconnected kinematics:
-#    'alternately' - the axes move alternately, step by step. (default)
-#    'synchronous' - the axes move depending on their magnitude, trying
-#    to minimizing the delta between axis magnitudes.
-#    Methods for synchronizing axis/axes on NOT interconnected kinematics:
+#    'alternately' - the axes calibrated alternately, step by step. (default)
+#    'synchronous' - the axes calibrated depending on their magnitude,
+#    trying to keep it at the same level.
+#    Methods for synchronizing axis/axes on NOT-interconnected kinematics:
 #    'sequential' - axes are calibrated sequentially. (default)
 #model: linear
-#    Model of the dependence of the displacement of microsteps on the
-#    shaft of a stepper motor depends on the magnitude of the measured
-#    oscillations. Are indicated general or for axis. Supported models:
-#    linear, quadratic, power, root, hyperbolic, exponential.
+#    Model of the dependence of the microstep displacement of a stepper
+#    motor on the magnitude of the measured oscillations. Supported
+#    models: linear, quadratic, power, root, hyperbolic, exponential.
 #model_coeffs: 20000, 0
 #    Coefficients above the described model, for calculating microsteps.
-#    Are indicated general or for axis.
 #max_step_size: 3
 #    The maximum number of microsteps that the motor can take move at time,
 #    to achieve the planned magnitude.
 #axes_steps_diff: 4
-#    Microstep difference between two axes in synchronous method, or on
-#    aligning axes in alternately method, to trigger an additional check of
-#    the current magnitude on the weaker axis. 
-#    The typical and minimum value - max_step_size + 1.
+#    The difference in the positions of the motors in microsteps between
+#    the two axes, to update the magnitude of the secondary axis. It is
+#    used in the synchronous method, or in the process of axis alignment
+#    in the alternately method. The typical value is max_step_size + 1.
 #retry_tolerance: 0
 #    The forced threshold to which a pair of stepper motors on one belt
 #    will have to lower the magnitude of the oscillations. It's recommended
@@ -92,74 +106,73 @@ accel_chip:
 #    iterations of starting synchronization, you will find the edge, to
 #    which this parameter should be omitted.
 #retries: 0
-#    Maximum number of repetitions to achieve a forced threshold of motor
-#    synchronization deviations.
+#    The maximum number of repetitions to achieve the forced threshold of
+#    oscillations.
 #head_fan:
 #    Toolhead fan, which will be turned off during sync to eliminate noise.
-#    This is convenient when the fan has a low temp target and is often
-#    turned on, for example in thermal chamber.
 ```
-3. Motor synchronization:
-   Enter the `SYNC_MOTORS` command in the terminal on the main web page
-   interface and wait for the completion of the process.
 
-   Some parameters can be overridden:
-   ```
-    SYNC_MOTORS AXES=[<axes>] ACCEL_CHIP_<AXIS>=[<chip_name>]
-     [RETRY_TOLERANCE=<value>] [RETRIES=<value>]
-   ```
-   For the convenience of configuring additional parameters, you can add a
-   macro from `motors_sync.cfg` to get the physical buttons\cells in the
-   interface.
-4. Synchronization usually starts at the beginning of printing, during 
-   heating the table. To do this, add it to the macro\slicer. For example -
+### Motor synchronization
+Enter the `SYNC_MOTORS` command in the terminal on the main web page
+interface and wait for the completion of the process. Some parameters can
+be overridden:
 ```
-M140 S ;set bed temp
+SYNC_MOTORS AXES=[<axes>] ACCEL_CHIP=[<chip_name>]
+ [RETRY_TOLERANCE=<value>] [RETRIES=<value>]
+```
+These can also be specified per axis, for example `ACCEL_CHIP_X`.
+Otherwise, the parameter will override values for the selected or all axes.
+
+### Automation
+Synchronization is typically performed at the start of printing during
+printer preheating. Add it to a macro or slicer. For example:
+```
+M140 S   ; set bed temp
 SYNC_MOTORS
 G28 Z
 M190 S   ; wait for bed temp to stabilize
 M104 S   ; set extruder temp
 ...
 ```
-5. A calibration status variable is also entered, which is reset when the
-   printer motors are turned off. You can start syncing via
-   `motors_sync.cfg`, which already has this check in itself, or check its
-   state is inside the macro. In case of a positive status, do not
-   calibration once again, if it has already been performed in the current
-   session. For example -
+
+### Calibration status variable
+A calibration status variable is introduced, which resets when the
+printer's motors are turned off. You can check its state in a macro.
+If the status is positive, skip unnecessary calibration if it has already
+been performed in the current session. For example:
 ```
 ...
 G28 X Y
 {% if not printer.motors_sync.applied %}
     SYNC_MOTORS
-{% endif%}
+{% endif %}
 G28 Z
 ...
 ```
-### Calibration of the synchronization model -
-After you have made sure that the entire process is working properly, you
-do not have accidental erroneous measurements, etc., you can speed up the
-execution synchronization by selecting a suitable model for the dependence
-of microsteps on the magnitude of fluctuations. To do this, enter the
-command `SYNC_MOTORS_CALIBRATE` into the terminal, some parameters can
-also be redefined:
+
+### Synchronization model calibration
+Once you ensure the entire process works correctly without random
+measurement errors, you can speed up synchronization by selecting a
+suitable model of the relationship between microsteps and vibration
+magnitude. However, the calibrator is designed to tolerate some
+measurement errors, which should not significantly affect calibration
+results. Enter the `SYNC_MOTORS_CALIBRATE` command in the terminal. Some
+parameters can also be overridden:
 ```
 SYNC_MOTORS_CALIBRATE AXIS=[<axis>] [PEAK_POINT=<value>] [REPEATS=<value>]
 ```
-By default, the calibration will perform 10 iterations of 
-increasing/decreasing magnitude in the range from `~0` to 
-`rotation_distance * 1250`. After it is completed, you will see in the
-terminal the path to the graphic image, as well as the model. Open the
-file and see something like the following -
+By default, calibration performs 10 iterations of increasing/decreasing
+magnitude from `~0` to `rotation_distance * 1250`, stepping by 1 microstep.
+After completion, you will see a terminal message with a path to the
+graphical output, as well as mathematical models and their parameters.
+Open the file to see something like this:
 
 ![](/wiki/pictures/img_1.png)
 
-Both in the terminal and on the graph, the table shows the name of the
-model and its root mean square error (RMSE) from the measured points,
-sorted in ascending order. We take the function with the smallest
-deviation from the parameters from the terminal, additionally check it
-with our eyes on the graph with dots and enter it into the configuration
-file. For example -
+Both the terminal and graph display models names and their RMSE
+(root-mean-square-error) relative to measured points, sorted in ascending
+order. Select the model with the smallest deviation and its parameters
+from the terminal, put in your configuration file. For example:
 ```
 model: exponential
 model_coeffs:
@@ -167,5 +180,32 @@ model_coeffs:
     0.0293145933,
     -70739.3609995888
 ```
-### [Support](https://ko-fi.com/altzbox ) the project
-### Contacts - @altzbox @mrx8024 telegram / discord
+
+### Calibration statistics
+Each synchronization iteration is logged in a journal located in the
+script directory. You can view sync statistics with the following command:
+```
+SYNC_MOTORS_STATS
+```
+To clear the journal, use the command:
+```
+SYNC_MOTORS_STATS CLEAR=true
+```
+
+### Contacts
+Use the issue GitHub system.
+You can also write to me personally in discord - @mrx8024.
+
+### A bit of history:
+The project idea emerged in the summer of 2023. Its first author,
+@altzbox, realized that an accelerometer could measure impact force when
+activating motors. The community was unenthusiastic about the idea, and 
+insufficient programming skills hindered solo implementation. Six months
+later, tired of manual motor synchronization, @altzbox wrote code using
+ChatGPT, leading to the first working [version](
+https://github.com/altzbox/motors_sync) in January 2024. However, the
+skills were no longer enough for the further development of the project.
+In spring 2024, I (@mrx8024) became interested in the idea and decided to
+continue development.
+
+### [Support the project](https://ko-fi.com/altzbox)
