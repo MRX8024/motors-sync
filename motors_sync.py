@@ -834,7 +834,7 @@ class MotorsSyncCalibrate:
 
     def run_calibrate(self, gcmd):
         repeats = gcmd.get_int('REPEATS', 10, minval=2, maxval=100)
-        axis = gcmd.get_int('AXIS', next(iter(self.sync.motion)))
+        axis = gcmd.get('AXIS', next(iter(self.sync.motion))).upper()
         m = self.sync.motion[axis]
         rd = self.sync.lookup_config(m['steppers'][0], ['rotation_distance'], 0)
         peak_point = gcmd.get_int('PEAK_POINT', rd * 1250, minval=10000, maxval=999999)
