@@ -574,13 +574,15 @@ class MotorsSync:
             min_ax, max_ax = sorted(self.motion, key=lambda x: self.motion[x]['init_magnitude'])[:2]
             axes_level(min_ax, max_ax)
             axes = self.axes[::-1] if max_ax == self.axes[0] else self.axes
+            check_axis = True
             for axis in itertools.cycle(axes):
                 m = self.motion[axis]
                 if m['out_msg']:
                     if all(bool(self.motion[axis]['out_msg']) for axis in self.axes):
                         break
                     continue
-                inner_sync(axis)
+                inner_sync(axis, check_axis)
+                check_axis = False
         elif self.sync_method == 'synchronous' and len(self.axes) > 1:
             check_axis = False
             cycling = itertools.cycle(self.axes)
