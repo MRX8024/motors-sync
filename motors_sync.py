@@ -694,11 +694,10 @@ class MotorsSync:
     cmd_SYNC_MOTORS_CALIBRATE_help = 'Calibrate synchronization process'
     def cmd_SYNC_MOTORS_CALIBRATE(self, gcmd):
         # Calibrate sync model and model coeffs
-        try:
-            cal.run_calibrate(gcmd)
-        except:
+        if not hasattr(self, 'cal'):
             cal = MotorsSyncCalibrate(self)
-            cal.run_calibrate(gcmd)
+        cal.run_calibrate(gcmd)
+        self.status.reset()
 
     def get_status(self, eventtime=None, user=False):
         if not user:
@@ -847,6 +846,7 @@ class MotorsSyncCalibrate:
         invs = [1, -1]
         y_samples = np.array([])
         m['move_msteps'] = 1
+        m['backup_msteps'] = m['actual_msteps']
         for i in range(1, repeats + 1):
             # Restore previous true magnitude after _final_sync() and after invs[-1]
             m['new_magnitude'] = m['magnitude']
@@ -875,6 +875,10 @@ class MotorsSyncCalibrate:
             # Move on previous microstep
             self.sync._stepper_move(m['lookuped_steppers'][0], m['move_msteps'] * m['move_len'])
             m['actual_msteps'] += m['move_msteps']
+        # Move on initial mstep
+        move_msteps = m['backup_msteps'] - m['actual_msteps']
+        self.sync._stepper_move(m['lookuped_steppers'][0], move_msteps * m['move_len'])
+        m['actual_msteps'] = m.pop('backup_msteps')
         y_samples = np.sort(y_samples)
         x_samples = np.linspace(0.01, max_steps, len(y_samples))
         if self.sync.debug:
