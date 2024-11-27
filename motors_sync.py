@@ -10,7 +10,6 @@ from . import z_tilt
 
 PIN_MIN_TIME = 0.010
 DISABLE_STALL_TIME = 0.100
-MEASURE_DELAY = 0.05            # Delay between damped oscillations and measurement
 ACCEL_FILTER_THRESHOLD = 3000   # Accelerometer filter disabled at lower sampling rate
 AXES_LEVEL_DELTA = 2000         # Magnitude difference between axes
 LEVELING_KINEMATICS = (         # Kinematics with interconnected axes
@@ -398,11 +397,22 @@ class MotorsSync:
             self._stepper_move(lookup_sec_stepper, dist)
             self._stepper_move(lookup_sec_stepper, -dist)
 
-    def _calc_magnitude(self, aclient, axis):
+    def _get_accel_samples(self, aclient):
+        if not aclient.msgs:
+            raise self.gcode.error(
+                'motors_sync: No data from accelerometer')
+        raw_data = np.concatenate([np.array(m['data']) for m in aclient.msgs])
+        start_idx = np.searchsorted(raw_data[:, 0],
+                    aclient.request_start_time, side='left')
+        end_idx = np.searchsorted(raw_data[:, 0],
+                    aclient.request_end_time, side='right')
+        t_accels = raw_data[start_idx:end_idx]
+        return t_accels[:, 1:]
+
+    def _calc_magnitude(self, axis, aclient):
         # Calculate impact magnitude
         if self.debug: start_time = time.perf_counter()
-        vect = np.array([[sample.accel_x, sample.accel_y, sample.accel_z]
-                         for sample in aclient.get_samples()])
+        vect = self._get_accel_samples(aclient)
         vect_len = vect.shape[0]
         cut = vect[:vect_len // 10, :]
         z_axis = np.mean(np.abs(cut), axis=0).argmax()
@@ -427,14 +437,18 @@ class MotorsSync:
         stepper = self.motion[axis]['steppers'][0]
         if self.motion[axis]['do_buzz']:
             self._buzz(axis)
+        chip_config = self.motion[axis]['chip_config']
+        rate = chip_config.batch_bulk.batch_interval
+        aclient = chip_config.start_internal_client()
         self._stepper_switch(stepper, 1)
         self._stepper_switch(stepper, 0)
-        aclient = self.motion[axis]['chip_config'].start_internal_client()
-        self.toolhead.dwell(MEASURE_DELAY)
+        aclient.request_start_time = self.toolhead.get_last_move_time()
         self._stepper_switch(stepper, 1)
-        self.toolhead.dwell(MEASURE_DELAY)
-        aclient.finish_measurements()
-        return self._calc_magnitude(aclient, axis)
+        aclient.request_end_time = self.toolhead.get_last_move_time()
+        self.toolhead.dwell(rate)
+        self.toolhead.wait_moves()
+        aclient.is_finished = True
+        return self._calc_magnitude(axis, aclient)
 
     def _homing(self):
         # Homing and going to center
