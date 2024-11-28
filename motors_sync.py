@@ -9,7 +9,7 @@ import numpy as np
 from . import z_tilt
 
 PIN_MIN_TIME = 0.010
-DISABLE_STALL_TIME = 0.100
+MOTOR_STALL_TIME = 0.100
 ACCEL_FILTER_THRESHOLD = 3000   # Accelerometer filter disabled at lower sampling rate
 AXES_LEVEL_DELTA = 2000         # Magnitude difference between axes
 LEVELING_KINEMATICS = (         # Kinematics with interconnected axes
@@ -374,15 +374,16 @@ class MotorsSync:
     def _send(self, params):
         self.gcode._process_commands([params], False)
 
-    def _stepper_switch(self, stepper, mode):
-        self.toolhead.dwell(DISABLE_STALL_TIME)
+    def _stepper_switch(self, stepper, mode, ontime=\
+            MOTOR_STALL_TIME, offtime=MOTOR_STALL_TIME):
+        self.toolhead.dwell(ontime)
         print_time = self.toolhead.get_last_move_time()
         el = self.stepper_en.enable_lines[stepper]
         if mode:
             el.motor_enable(print_time)
         else:
             el.motor_disable(print_time)
-        self.toolhead.dwell(DISABLE_STALL_TIME)
+        self.toolhead.dwell(offtime)
 
     def _stepper_move(self, stepper, dist):
         self.force_move.manual_move(stepper, dist, 100, self.travel_accel)
@@ -391,9 +392,10 @@ class MotorsSync:
         # Fading oscillations
         move_len = self.motion[axis]['move_len']
         lookup_sec_stepper = self.motion[axis]['lookuped_steppers'][1]
-        self._stepper_switch(self.motion[axis]['steppers'][0], 0)
         for i in reversed(range(0, int(0.4 / move_len))):
             dist = move_len * 4 * i
+        self._stepper_switch(self.motion[axis]['steppers'][0], 0,
+                             PIN_MIN_TIME, PIN_MIN_TIME)
             self._stepper_move(lookup_sec_stepper, dist)
             self._stepper_move(lookup_sec_stepper, -dist)
 
@@ -440,8 +442,8 @@ class MotorsSync:
         chip_config = self.motion[axis]['chip_config']
         rate = chip_config.batch_bulk.batch_interval
         aclient = chip_config.start_internal_client()
-        self._stepper_switch(stepper, 1)
-        self._stepper_switch(stepper, 0)
+        self._stepper_switch(stepper, 1, PIN_MIN_TIME)
+        self._stepper_switch(stepper, 0, PIN_MIN_TIME)
         aclient.request_start_time = self.toolhead.get_last_move_time()
         self._stepper_switch(stepper, 1)
         aclient.request_end_time = self.toolhead.get_last_move_time()
