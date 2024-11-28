@@ -88,6 +88,7 @@ class MotorsSync:
             rd, fspr = self.lookup_config(
                 stepper, ['rotation_distance', 'full_steps_per_rotation'], 200)
             move_len = rd / fspr / self.motion[axis]['microsteps']
+            rel_buzz_d = rd / fspr * 10
             steppers, lookuped = zip(*[(l.get_name(), l) for l in
                 self.kin.get_steppers() if lo_axis in l.get_name()])
             if len(steppers) not in (2,):
@@ -103,6 +104,7 @@ class MotorsSync:
                             f' more than steppers, {cf_msteps} vs {st_msteps}')
             self.motion[axis].update({
                 'do_buzz': True,
+                'rel_buzz_d': rel_buzz_d,
                 'steppers': steppers,
                 'lookuped_steppers': lookuped,
                 'move_len': move_len
@@ -386,16 +388,17 @@ class MotorsSync:
         self.toolhead.dwell(offtime)
 
     def _stepper_move(self, stepper, dist):
-        self.force_move.manual_move(stepper, dist, 100, self.travel_accel)
+        self.force_move.manual_move(stepper, dist,
+            self.travel_speed, self.travel_accel)
 
-    def _buzz(self, axis):
+    def _buzz(self, axis, rel_moves=25):
         # Fading oscillations
-        move_len = self.motion[axis]['move_len']
+        rel_buzz_d = self.motion[axis]['rel_buzz_d']
         lookup_sec_stepper = self.motion[axis]['lookuped_steppers'][1]
-        for i in reversed(range(0, int(0.4 / move_len))):
-            dist = move_len * 4 * i
         self._stepper_switch(self.motion[axis]['steppers'][0], 0,
                              PIN_MIN_TIME, PIN_MIN_TIME)
+        for i in reversed(range(0, rel_moves)):
+            dist = rel_buzz_d * (i / rel_moves)
             self._stepper_move(lookup_sec_stepper, dist)
             self._stepper_move(lookup_sec_stepper, -dist)
 
@@ -463,7 +466,7 @@ class MotorsSync:
             self._send(f"G28 {' '.join(axes)}")
         self._send(f"G0 {' '.join(f'{axis}{pos}' for axis, pos in center.items())}"
                    f" F{self.travel_speed * 60}")
-        self.toolhead.wait_moves()
+        self.toolhead.dwell(MOTOR_STALL_TIME)
 
     def _detect_move_dir(self, axis):
         # Determine movement direction
