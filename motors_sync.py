@@ -417,16 +417,20 @@ class MotorsSync:
     def _calc_magnitude(self, axis, aclient):
         # Calculate impact magnitude
         if self.debug: start_time = time.perf_counter()
-        vect = self._get_accel_samples(aclient)
-        vect_len = vect.shape[0]
-        cut = vect[:vect_len // 10, :]
-        z_axis = np.mean(np.abs(cut), axis=0).argmax()
-        xy_vect = np.delete(vect, z_axis, axis=1)
-        magnitudes = np.linalg.norm(xy_vect, axis=1)
+        vects = self._get_accel_samples(aclient)
+        vects_len = vects.shape[0]
+        # Kalman filter may distort the first values, or in some
+        # cases there may be residual values of toolhead inertia.
+        # It is better to take a shifted zone from zero.
+        static_zone = range(vects_len // 5, vects_len // 3)
+        z_cut_zone = vects[static_zone, :]
+        z_axis = np.mean(np.abs(z_cut_zone), axis=0).argmax()
+        xy_mask = np.arange(vects.shape[1]) != z_axis
+        magnitudes = np.linalg.norm(vects[:, xy_mask], axis=1)
         # Add median, Kalman or none filter
         magnitudes = self.motion[axis]['chip_filter'](magnitudes)
         # Calculate static noise
-        static = np.mean(magnitudes[vect_len // 4:vect_len // 2])
+        static = np.mean(magnitudes[static_zone])
         # Return avg of 5 max magnitudes with deduction static
         magnitude = np.mean(np.sort(magnitudes)[-5:])
         if self.debug: self.gcode.respond_info(
