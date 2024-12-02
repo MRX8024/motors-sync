@@ -562,15 +562,15 @@ class MotorsSync:
                         continue
                     force_exit = True
                 m.magnitude = m.new_magnitude
-                delta = m.new_magnitude - s.init_magnitude
+                delta = m.new_magnitude - s.magnitude
                 if (delta < AXES_LEVEL_DELTA
-                     or m.new_magnitude < s.init_magnitude
+                     or m.new_magnitude < s.magnitude
                      or force_exit):
                     self.gcode.respond_info(
                         f"Axes are leveled: {max_ax.name.upper()}: "
                         f"{m.init_magnitude} --> {m.new_magnitude}, "
-                        f"{min_ax.name.upper()}: {s.init_magnitude}, "
-                        f"delta: {delta:.2f}", True)
+                        f"{min_ax.name.upper()}: {s.init_magnitude} "
+                        f"--> {s.magnitude}, delta: {delta:.2f}", True)
                     return
                 continue
 
