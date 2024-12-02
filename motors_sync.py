@@ -497,12 +497,12 @@ class MotorsSync:
             msg = f"{name}-Movement direction: {axis.move_dir[1]}"
         elif state == 'done':
             axis.fan_switch(True)
-            msg = (f"{name} Motors adjusted by {axis.actual_msteps}/"
+            msg = (f"{name}-Motors adjusted by {axis.actual_msteps}/"
                    f"{axis.microsteps} step, magnitude "
                    f"{axis.init_magnitude} --> {axis.magnitude}")
         elif state == 'retry':
             axis.move_dir[1] = 'unknown'
-            msg = (f"{name} Retries: {axis.curr_retry}/{axis.max_retries} "
+            msg = (f"{name}-Retries: {axis.curr_retry}/{axis.max_retries} "
                    f"Back on last magnitude: {axis.magnitude} on "
                    f"{axis.actual_msteps}/{axis.microsteps} step "
                    f"to reach {axis.retry_tolerance}")
