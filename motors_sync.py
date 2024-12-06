@@ -583,7 +583,7 @@ class MotorsSync:
                 m.magnitude = m.new_magnitude
                 return
             if m.move_dir[1] == 'unknown':
-                if not m.new_magnitude or m.curr_retry:
+                if not m.actual_msteps or m.curr_retry:
                     m.new_magnitude = self._measure(m)
                     m.magnitude = m.new_magnitude
                     self._handle_state(m, 'static')
@@ -593,7 +593,6 @@ class MotorsSync:
                     m.is_finished = True
                     return
                 self._detect_move_dir(m)
-                return
             m.move_msteps = min(max(
                 int(m.model_solve()), 1), m.max_step_size)
             self._single_move(m)
@@ -620,15 +619,13 @@ class MotorsSync:
                 self.motion.values(), key=lambda i: i.init_magnitude)]
             axes_level(max_ax, min_ax)
             axes = self.axes[::-1] if max_ax.name == self.axes[0] else self.axes
-            check_axis = True
             for axis in itertools.cycle(axes):
                 m = self.motion[axis]
                 if m.is_finished:
                     if all(self.motion[ax].is_finished for ax in self.axes):
                         break
                     continue
-                inner_sync(m, check_axis)
-                check_axis = False
+                inner_sync(m)
         elif self.sync_method == 'synchronous' and len(self.axes) > 1:
             check_axis = False
             cycling = itertools.cycle(self.axes)
