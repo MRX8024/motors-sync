@@ -401,9 +401,9 @@ class MotorsSync:
             self.travel_speed, self.travel_accel)
 
     def _single_move(self, axis, look_stepper=None, dir=1):
-        # Move <axis>0 stepper motor by default
+        # Move <axis>1 stepper motor by default
         if look_stepper is None:
-            look_stepper = axis.steppers[0][1]
+            look_stepper = axis.steppers[1][1]
         move_msteps = axis.move_msteps * axis.move_dir[0] * dir
         dist = axis.move_d * move_msteps
         axis.actual_msteps += move_msteps
@@ -472,6 +472,7 @@ class MotorsSync:
         self.toolhead.dwell(rate)
         self.toolhead.wait_moves()
         aclient.is_finished = True
+        self._stepper_switch(stepper, 0, PIN_MIN_TIME, PIN_MIN_TIME)
         return self._calc_magnitude(axis, aclient)
 
     def _homing(self):
