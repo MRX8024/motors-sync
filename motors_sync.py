@@ -669,6 +669,16 @@ class MotorsSync:
 
     cmd_SYNC_MOTORS_help = 'Start motors synchronization'
     def cmd_SYNC_MOTORS(self, gcmd, force_run=False):
+        _, axis = next(iter(self.motion.items()))
+        aclient = axis.chip_config.start_internal_client()
+        aclient.request_start_time = self.toolhead.get_last_move_time()
+        self.toolhead.dwell(2)
+        self.toolhead.wait_moves()
+        aclient.request_end_time = self.toolhead.get_last_move_time()
+        aclient.is_finished = True
+        for i in aclient.msgs:
+            self.gcode.respond_info(str(i['data'][0][0]))
+        return
         # Live variables
         axes_from_gcmd = gcmd.get('AXES', '')
         if axes_from_gcmd:
