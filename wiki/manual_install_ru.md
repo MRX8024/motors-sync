@@ -6,13 +6,6 @@
 
     ```~/klippy-env/bin/pip install numpy matplotlib scipy```
 
-
-4. Добавьте в конфигурацию принтера строки - 
-```
-[force_move]
-enable_force_move: True
-```
-
 Также, по желанию, можно добавить раздел обновления в moonraker для последующих обновлений через ведморду в разделе обновлений.
 ```
 [update_manager motors-sync]

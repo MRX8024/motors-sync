@@ -6,13 +6,6 @@
 
     ```~/klippy-env/bin/pip install numpy matplotlib scipy```
 
-
-4. Add lines to the configuration -
-```
-[force_move]
-enable_force_move: True
-```
-
 You can also optionally add an update section to moonraker for subsequent updates via Fluidd / Mainsail update managers.
 ```
 [update_manager motors-sync]
