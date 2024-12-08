@@ -155,11 +155,14 @@ class MotionAxis:
     def init_chip_config(self, chip_name):
         self.chip_config = self.printer.lookup_object(chip_name)
         if hasattr(self.chip_config, 'data_rate'):
+            self.chip_batch_rate = self.chip_config.batch_bulk.batch_interval
             if self.chip_config.data_rate > ACCEL_FILTER_THRESHOLD:
                 self._init_chip_filter()
             else:
                 self.chip_filter = lambda data: data
         elif chip_name == 'beacon':
+            # Beacon batch rate = 0.05
+            self.chip_batch_rate = 0.05
             # Beacon sampling rate > ACCEL_FILTER_THRESHOLD
             self._init_chip_filter()
         else:
@@ -462,14 +465,13 @@ class MotorsSync:
         if axis.do_buzz:
             self._buzz(axis)
         stepper = axis.steppers[0][0]
-        rate = axis.chip_config.batch_bulk.batch_interval
         aclient = axis.chip_config.start_internal_client()
         self._stepper_switch(stepper, 1, PIN_MIN_TIME)
         self._stepper_switch(stepper, 0, PIN_MIN_TIME)
         aclient.request_start_time = self.toolhead.get_last_move_time()
         self._stepper_switch(stepper, 1)
         aclient.request_end_time = self.toolhead.get_last_move_time()
-        self.toolhead.dwell(rate)
+        self.toolhead.dwell(axis.chip_batch_rate)
         self.toolhead.wait_moves()
         aclient.is_finished = True
         self._stepper_switch(stepper, 0, PIN_MIN_TIME, PIN_MIN_TIME)
