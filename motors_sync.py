@@ -879,7 +879,7 @@ class MotorsSyncCalibrate:
         axis = gcmd.get('AXIS', next(iter(self.sync.motion))).lower()
         m = self.sync.motion[axis]
         st_section = self.sync.config.getsection(m.steppers[0][0])
-        rd = st_section.get('rotation_distance')
+        rd = st_section.getfloat('rotation_distance')
         peak_point = gcmd.get_int('PEAK_POINT', rd * 1250, minval=10000)
         self.gcode.respond_info(
             f'Calibration started on {axis} axis with {repeats}'
