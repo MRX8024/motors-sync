@@ -258,7 +258,6 @@ class MotorsSync:
         # Read config
         self._init_axes()
         self._init_sync_method()
-        self.debug = self.config.getboolean('debug', default=False)
         # Register commands
         self.gcode.register_command('SYNC_MOTORS', self.cmd_SYNC_MOTORS,
                                     desc=self.cmd_SYNC_MOTORS_help)
@@ -447,7 +446,6 @@ class MotorsSync:
 
     def _calc_magnitude(self, axis):
         # Calculate impact magnitude
-        if self.debug: start_time = time.perf_counter()
         vects = self._get_accel_samples(axis.aclient)
         vects_len = vects.shape[0]
         # Kalman filter may distort the first values, or in some
@@ -464,9 +462,6 @@ class MotorsSync:
         static = np.mean(magnitudes[static_zone])
         # Return avg of 5 max magnitudes with deduction static
         magnitude = np.mean(np.sort(magnitudes)[-5:])
-        if self.debug: self.gcode.respond_info(
-            f'Static: {static:.2f}, total time: '
-            f'{time.perf_counter() - start_time:.6f}', True)
         magnitude = np.around(magnitude - static, 2)
         axis.log.append([int(magnitude), axis.actual_msteps])
         return magnitude
@@ -545,75 +540,26 @@ class MotorsSync:
         self._handle_state(axis, 'direction')
         axis.magnitude = axis.new_magnitude
 
-    def _run_sync(self):
-        # Axes synchronization
-        def axes_level(m, s):
-            # Axes leveling by magnitude
-            # "m" is a main axis, "s" is a second axis
-            delta = m.init_magnitude - s.init_magnitude
-            if delta <= AXES_LEVEL_DELTA:
-                return
-            self.gcode.respond_info(
-                f'Start axes level, delta: {delta:.2f}', True)
-            force_exit = False
-            while True:
-                # Note: m.axes_steps_diff == s.axes_steps_diff
-                steps_diff = abs(abs(m.check_msteps) - abs(s.check_msteps))
-                if steps_diff >= m.axes_steps_diff:
-                    s.new_magnitude = s.magnitude = self._measure(s)
-                    self._handle_state(s, 'static')
-                    m.check_msteps, s.check_msteps = 0, 0
-                if m.move_dir[1] == 'unknown':
-                    self._detect_move_dir(m)
-                steps_delta = int(m.model_solve() - m.model_solve(s.magnitude))
-                m.move_msteps = min(max(steps_delta, 1), m.max_step_size)
-                self._single_move(m)
-                m.new_magnitude = self._measure(m)
-                self._handle_state(m, 'stepped')
-                if m.new_magnitude > m.magnitude:
-                    self._single_move(m, dir=-1)
-                    if m.retry_tolerance and m.magnitude > m.retry_tolerance:
-                        m.curr_retry += 1
-                        if m.curr_retry > m.max_retries:
-                            self._handle_state(m, 'done')
-                            self.write_log(m)
-                            raise self._handle_state(m, 'error')
-                        self._handle_state(m, 'retry')
-                        continue
-                    force_exit = True
-                m.magnitude = m.new_magnitude
-                delta = m.new_magnitude - s.magnitude
-                if (delta < AXES_LEVEL_DELTA
-                     or m.new_magnitude < s.magnitude
-                     or force_exit):
-                    self.gcode.respond_info(
-                        f"Axes are leveled: {max_ax.name.upper()}: "
-                        f"{m.init_magnitude} --> {m.new_magnitude}, "
-                        f"{min_ax.name.upper()}: {s.init_magnitude} "
-                        f"--> {s.magnitude}, delta: {delta:.2f}", True)
-                    return
-                continue
-
-        def inner_sync(m, check_axis=False):
-            # "m" is a main axis, just single axis
-            if check_axis:
-                m.new_magnitude = self._measure(m)
-                self._handle_state(m, 'static')
-                m.magnitude = m.new_magnitude
-                return
+    def axes_level(self, m, s):
+        # Axes leveling by magnitude
+        # "m" is a main axis, "s" is a second axis
+        delta = m.init_magnitude - s.init_magnitude
+        if delta <= AXES_LEVEL_DELTA:
+            return
+        self.gcode.respond_info(
+            f'Start axes level, delta: {delta:.2f}', True)
+        force_exit = False
+        while True:
+            # Note: m.axes_steps_diff == s.axes_steps_diff
+            steps_diff = abs(abs(m.check_msteps) - abs(s.check_msteps))
+            if steps_diff >= m.axes_steps_diff:
+                s.new_magnitude = s.magnitude = self._measure(s)
+                self._handle_state(s, 'static')
+                m.check_msteps, s.check_msteps = 0, 0
             if m.move_dir[1] == 'unknown':
-                if not m.actual_msteps or m.curr_retry:
-                    m.new_magnitude = self._measure(m)
-                    m.magnitude = m.new_magnitude
-                    self._handle_state(m, 'static')
-                if (not m.actual_msteps
-                     and m.retry_tolerance
-                     and m.new_magnitude < m.retry_tolerance):
-                    m.is_finished = True
-                    return
                 self._detect_move_dir(m)
-            m.move_msteps = min(max(
-                int(m.model_solve()), 1), m.max_step_size)
+            steps_delta = int(m.model_solve() - m.model_solve(s.magnitude))
+            m.move_msteps = min(max(steps_delta, 1), m.max_step_size)
             self._single_move(m)
             m.new_magnitude = self._measure(m)
             self._handle_state(m, 'stepped')
@@ -622,21 +568,70 @@ class MotorsSync:
                 if m.retry_tolerance and m.magnitude > m.retry_tolerance:
                     m.curr_retry += 1
                     if m.curr_retry > m.max_retries:
-                        # Write error in log
-                        self.write_log(m)
                         self._handle_state(m, 'done')
+                        self.write_log(m)
                         raise self._handle_state(m, 'error')
                     self._handle_state(m, 'retry')
-                    return
+                    continue
+                force_exit = True
+            m.magnitude = m.new_magnitude
+            delta = m.new_magnitude - s.magnitude
+            if (delta < AXES_LEVEL_DELTA
+                    or m.new_magnitude < s.magnitude
+                    or force_exit):
+                self.gcode.respond_info(
+                    f"Axes are leveled: {m.name.upper()}: "
+                    f"{m.init_magnitude} --> {m.new_magnitude}, "
+                    f"{s.name.upper()}: {s.init_magnitude} "
+                    f"--> {s.magnitude}, delta: {delta:.2f}", True)
+                return
+            continue
+
+    def single_sync(self, m, check_axis=False):
+        # "m" is a main axis, just single axis
+        if check_axis:
+            m.new_magnitude = self._measure(m)
+            self._handle_state(m, 'static')
+            m.magnitude = m.new_magnitude
+            return
+        if m.move_dir[1] == 'unknown':
+            if not m.actual_msteps or m.curr_retry:
+                m.new_magnitude = self._measure(m)
+                m.magnitude = m.new_magnitude
+                self._handle_state(m, 'static')
+            if (not m.actual_msteps
+                    and m.retry_tolerance
+                    and m.new_magnitude < m.retry_tolerance):
                 m.is_finished = True
                 return
-            m.magnitude = m.new_magnitude
+            self._detect_move_dir(m)
+        m.move_msteps = min(max(
+            int(m.model_solve()), 1), m.max_step_size)
+        self._single_move(m)
+        m.new_magnitude = self._measure(m)
+        self._handle_state(m, 'stepped')
+        if m.new_magnitude > m.magnitude:
+            self._single_move(m, dir=-1)
+            if m.retry_tolerance and m.magnitude > m.retry_tolerance:
+                m.curr_retry += 1
+                if m.curr_retry > m.max_retries:
+                    # Write error in log
+                    self.write_log(m)
+                    self._handle_state(m, 'done')
+                    raise self._handle_state(m, 'error')
+                self._handle_state(m, 'retry')
+                return
+            m.is_finished = True
+            return
+        m.magnitude = m.new_magnitude
 
+    def _run_sync(self):
+        # Axes synchronization
         if self.sync_method == 'alternately' and len(self.axes) > 1:
             # Find min and max axes for axes leveling
             min_ax, max_ax = [c for c in sorted(
                 self.motion.values(), key=lambda i: i.init_magnitude)]
-            axes_level(max_ax, min_ax)
+            self.axes_level(max_ax, min_ax)
             axes = self.axes[::-1] if max_ax.name == self.axes[0] else self.axes
             for axis in itertools.cycle(axes):
                 m = self.motion[axis]
@@ -644,7 +639,7 @@ class MotorsSync:
                     if all(self.motion[ax].is_finished for ax in self.axes):
                         break
                     continue
-                inner_sync(m)
+                self.single_sync(m)
         elif self.sync_method == 'synchronous' and len(self.axes) > 1:
             check_axis = False
             cycling = itertools.cycle(self.axes)
@@ -669,7 +664,7 @@ class MotorsSync:
                         m.check_msteps, s.check_msteps = 0, 0
                     else:
                         continue
-                inner_sync(m, check_axis)
+                self.single_sync(m, check_axis)
                 check_axis = False
         elif self.sync_method == 'sequential' or len(self.axes) == 1:
             for axis in self.axes:
@@ -681,7 +676,7 @@ class MotorsSync:
                         if all(self.motion[ax].is_finished for ax in self.axes):
                             return
                         break
-                    inner_sync(m)
+                    self.single_sync(m)
         else:
             raise self.gcode.error('Error in sync methods!')
 
@@ -899,8 +894,8 @@ class MotorsSyncCalibrate:
         rd = st_section.getfloat('rotation_distance')
         peak_point = gcmd.get_int('PEAK_POINT', rd * 1250, minval=10000)
         self.gcode.respond_info(
-            f'Calibration started on {axis} axis with {repeats}'
-            f' repeats, magnitude 0 --> {peak_point}', True)
+            f'Calibration started on {axis} axis with {repeats} '
+            f'repeats, magnitude 0 --> {peak_point}', True)
         self.gcode.respond_info('Synchronizing before calibration...', True)
         self.sync.cmd_SYNC_MOTORS(gcmd, True)
         loop_pos = itertools.cycle(
@@ -908,8 +903,9 @@ class MotorsSyncCalibrate:
         max_steps = 0
         invs = [1, -1]
         y_samples = np.array([])
+        self.sync._handle_state(m, 'start')
+        # Set calibrate step
         m.move_msteps = 1
-        m.backup_msteps = m.actual_msteps
         for i in range(1, repeats + 1):
             # Restore previous true magnitude after invs[-1]
             m.new_magnitude = m.magnitude
@@ -943,15 +939,17 @@ class MotorsSyncCalibrate:
             m.move_dir[0] = 1
             self.sync._single_move(m)
         # Move on initial mstep
-        m.move_msteps = m.backup_msteps - m.actual_msteps
+        m.move_msteps = -m.actual_msteps
         self.sync._single_move(m)
+        # Finish actions
+        m.fan_switch(True)
+        m.aclient.finish_measurements()
         y_samples = np.sort(y_samples)
         x_samples = np.linspace(0.01, max_steps, len(y_samples))
-        if self.sync.debug:
-            x_samples_str = ', '.join([str(i) for i in y_samples])
-            y_samples_str = ', '.join([f'{i:.2f}' for i in x_samples])
-            self.gcode.respond_info(f"Y Samples: {x_samples_str}", True)
-            self.gcode.respond_info(f"X samples: {y_samples_str}", True)
+        x_samples_str = ', '.join([str(i) for i in y_samples])
+        y_samples_str = ', '.join([f'{i:.2f}' for i in x_samples])
+        logging.info(f"motors_sync: y_samples: [{x_samples_str}]")
+        logging.info(f"motors_sync: x_samples: [{y_samples_str}]")
 
         def samples_processing():
             try:
