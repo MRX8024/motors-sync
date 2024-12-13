@@ -46,6 +46,7 @@ class MotionAxis:
         self.curr_retry = 0
         self.is_finished = False
         self.log = []
+        self.aclient = None
         stepper = 'stepper_' + name
         st_section = config.getsection(stepper)
         min_pos = st_section.getfloat('position_min', 0)
@@ -155,14 +156,11 @@ class MotionAxis:
     def init_chip_config(self, chip_name):
         self.chip_config = self.printer.lookup_object(chip_name)
         if hasattr(self.chip_config, 'data_rate'):
-            self.chip_batch_rate = self.chip_config.batch_bulk.batch_interval
             if self.chip_config.data_rate > ACCEL_FILTER_THRESHOLD:
                 self._init_chip_filter()
             else:
                 self.chip_filter = lambda data: data
         elif chip_name == 'beacon':
-            # Beacon batch rate = 0.05
-            self.chip_batch_rate = 0.05
             # Beacon sampling rate > ACCEL_FILTER_THRESHOLD
             self._init_chip_filter()
         else:
@@ -210,7 +208,7 @@ class MotionAxis:
             def fan_switch(on=True):
                 if not self.fan:
                     return
-                now = self.printer.get_reactor().monotonic()
+                now = self.sync.reactor.monotonic()
                 print_time = (self.fan.fan.get_mcu().
                               estimated_print_time(now))
                 speed = self.fan.last_speed if on else .0
@@ -275,6 +273,7 @@ class MotorsSync:
         self.travel_speed = self.toolhead.max_velocity / 2
         self.travel_accel = min(self.toolhead.max_accel, 5000)
         self.kin = self.toolhead.get_kinematics()
+        self.reactor = self.printer.get_reactor()
         for axis in self.motion.values():
             axis.handle_connect()
 
@@ -423,9 +422,21 @@ class MotorsSync:
             self._stepper_move(look_stepper1, dist)
             self._stepper_move(look_stepper1, -dist)
 
+    def _wait_samples(self, aclient):
+        lim = self.reactor.monotonic() + 5.
+        while True:
+            now = self.reactor.monotonic()
+            self.reactor.pause(now + 0.010)
+            if aclient.msgs:
+                last_mcu_time = aclient.msgs[-1]['data'][-1][0]
+                if last_mcu_time > aclient.request_end_time:
+                    return True
+                elif now > lim:
+                    raise self.gcode.error(
+                        'motors_sync: No data from accelerometer')
+
     def _get_accel_samples(self, aclient):
-        if not aclient.msgs:
-            raise self.gcode.error('motors_sync: No data from accelerometer')
+        self._wait_samples(aclient)
         raw_data = np.concatenate([np.array(m['data']) for m in aclient.msgs])
         start_idx = np.searchsorted(raw_data[:, 0],
                     aclient.request_start_time, side='left')
@@ -434,10 +445,10 @@ class MotorsSync:
         t_accels = raw_data[start_idx:end_idx]
         return t_accels[:, 1:]
 
-    def _calc_magnitude(self, axis, aclient):
+    def _calc_magnitude(self, axis):
         # Calculate impact magnitude
         if self.debug: start_time = time.perf_counter()
-        vects = self._get_accel_samples(aclient)
+        vects = self._get_accel_samples(axis.aclient)
         vects_len = vects.shape[0]
         # Kalman filter may distort the first values, or in some
         # cases there may be residual values of toolhead inertia.
@@ -464,22 +475,19 @@ class MotorsSync:
         # Measure the impact
         if axis.do_buzz:
             self._buzz(axis)
+        axis.aclient.msgs.clear()
         stepper = axis.steppers[0][0]
-        aclient = axis.chip_config.start_internal_client()
         self._stepper_switch(stepper, 1, PIN_MIN_TIME)
         self._stepper_switch(stepper, 0, PIN_MIN_TIME)
-        aclient.request_start_time = self.toolhead.get_last_move_time()
+        axis.aclient.request_start_time = self.toolhead.get_last_move_time()
         self._stepper_switch(stepper, 1)
-        aclient.request_end_time = self.toolhead.get_last_move_time()
-        self.toolhead.dwell(axis.chip_batch_rate)
-        self.toolhead.wait_moves()
-        aclient.is_finished = True
+        axis.aclient.request_end_time = self.toolhead.get_last_move_time()
         self._stepper_switch(stepper, 0, PIN_MIN_TIME, PIN_MIN_TIME)
-        return self._calc_magnitude(axis, aclient)
+        return self._calc_magnitude(axis)
 
     def _homing(self):
         # Homing and going to center
-        now = self.printer.get_reactor().monotonic()
+        now = self.reactor.monotonic()
         axes, confs = zip(*self.motion.items())
         if ''.join(axes) not in self.kin.get_status(now)['homed_axes']:
             self._send(f"G28 {' '.join(axes)}")
@@ -498,8 +506,16 @@ class MotorsSync:
             msg = f"{name}-New magnitude: {axis.new_magnitude}"
         elif state == 'direction':
             msg = f"{name}-Movement direction: {axis.move_dir[1]}"
+        elif state == 'start':
+            axis.flush_motion_data()
+            axis.fan_switch(False)
+            axis.aclient = axis.chip_config.start_internal_client()
+            axis.init_magnitude = axis.magnitude = self._measure(axis)
+            msg =(f"{axis.name.upper()}-Initial magnitude: "
+                  f"{axis.init_magnitude}")
         elif state == 'done':
             axis.fan_switch(True)
+            axis.aclient.finish_measurements()
             msg = (f"{name}-Motors adjusted by {axis.actual_msteps}/"
                    f"{axis.microsteps} step, magnitude "
                    f"{axis.init_magnitude} --> {axis.magnitude}")
@@ -512,6 +528,7 @@ class MotorsSync:
         elif state == 'error':
             for axis in [a for a in self.motion.values() if a in self.axes]:
                 axis.fan_switch(True)
+                axis.aclient.finish_measurements()
             msg = 'Too many retries'
         self.gcode.respond_info(msg, True)
 
@@ -706,16 +723,14 @@ class MotorsSync:
         self.gcode.respond_info('Motors synchronization started', True)
         # Init axes
         for axis in self.axes:
-            m = self.motion[axis]
-            m.flush_motion_data()
-            m.fan_switch(False)
-            m.init_magnitude = m.magnitude = self._measure(m)
-            self.gcode.respond_info(f"{axis.upper()}-Initial magnitude: "
-                                    f"{m.init_magnitude}", True)
+            self._handle_state(self.motion[axis], 'start')
         if not force_run and all(m.init_magnitude < m.retry_tolerance
              for m in (self.motion[ax] for ax in self.axes)):
-            retry_tols = ", ".join(f"{a.name.upper()}: {a.retry_tolerance}"
-                                   for a in map(self.motion.get, self.axes))
+            retry_tols = ''
+            for axis in self.axes:
+                m = self.motion[axis]
+                m.aclient.finish_measurements()
+                retry_tols += f'{m.name.upper()}: {m.retry_tolerance}, '
             self.gcode.respond_info(f"Motors magnitudes are in "
                                     f"tolerance: {retry_tols}", True)
         else:
@@ -738,7 +753,7 @@ class MotorsSync:
         if not user:
             return self.status.get_status(eventtime)
         else:
-            now = self.printer.get_reactor().monotonic()
+            now = self.reactor.monotonic()
             return bool(list(self.status.get_status(now).values())[0])
 
 
