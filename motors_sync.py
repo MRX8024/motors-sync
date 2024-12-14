@@ -719,12 +719,14 @@ class MotorsSync:
         # Init axes
         for axis in self.axes:
             self._handle_state(self.motion[axis], 'start')
+        # Check if all axes in tolerance
         if not force_run and all(m.init_magnitude < m.retry_tolerance
              for m in (self.motion[ax] for ax in self.axes)):
             retry_tols = ''
             for axis in self.axes:
                 m = self.motion[axis]
                 m.aclient.finish_measurements()
+                m.fan_switch(True)
                 retry_tols += f'{m.name.upper()}: {m.retry_tolerance}, '
             self.gcode.respond_info(f"Motors magnitudes are in "
                                     f"tolerance: {retry_tols}", True)
