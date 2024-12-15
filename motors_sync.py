@@ -521,10 +521,10 @@ class MotorsSync:
                    f"{axis.actual_msteps}/{axis.microsteps} step "
                    f"to reach {axis.retry_tolerance}")
         elif state == 'error':
-            for axis in [a for a in self.motion.values() if a in self.axes]:
+            for axis in [c for a, c in self.motion.items() if a in self.axes]:
                 axis.fan_switch(True)
                 axis.aclient.finish_measurements()
-            msg = 'Too many retries'
+            raise self.gcode.error('Too many retries')
         self.gcode.respond_info(msg, True)
 
     def _detect_move_dir(self, axis):
@@ -570,7 +570,7 @@ class MotorsSync:
                     if m.curr_retry > m.max_retries:
                         self._handle_state(m, 'done')
                         self.write_log(m)
-                        raise self._handle_state(m, 'error')
+                        self._handle_state(m, 'error')
                     self._handle_state(m, 'retry')
                     continue
                 force_exit = True
@@ -618,7 +618,7 @@ class MotorsSync:
                     # Write error in log
                     self.write_log(m)
                     self._handle_state(m, 'done')
-                    raise self._handle_state(m, 'error')
+                    self._handle_state(m, 'error')
                 self._handle_state(m, 'retry')
                 return
             m.is_finished = True
