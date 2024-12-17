@@ -12,7 +12,7 @@ PLOT_PATH = '~/printer_data/config/adxl_results/motors_sync'
 PIN_MIN_TIME = 0.010            # Minimum wait time to enable hardware pin
 MOTOR_STALL_TIME = 0.100        # Minimum wait time to enable motor pin
 ACCEL_FILTER_THRESHOLD = 3000   # Accelerometer filter disabled at lower sampling rate
-AXES_LEVEL_DELTA = 2000         # Magnitude difference between axes in axes_level()
+AXES_LEVEL_DELTA = 2000         # Magnitude difference between axes in _axes_level()
 LEVELING_KINEMATICS = (         # Kinematics with interconnected axes
     ['corexy', 'limited_corexy'])
 
@@ -115,15 +115,15 @@ class MotionAxis:
         steppers = [(s.get_name(), s) for s in self.sync.kin.get_steppers()
                     if self.name in s.get_name()]
         if len(steppers) not in (2,):
-            raise self.config.error(f"motors_sync: Not support"
+            raise self.config.error(f"motors_sync: Not support "
                                     f"'{len(steppers)}' count of motors")
         for _steppers in steppers:
             st_section = self.config.getsection(_steppers[0])
             st_msteps = st_section.getint('microsteps')
             if self.microsteps > st_msteps:
                 raise self.config.error(
-                    f'motors_sync: Invalid microsteps count, cannot be'
-                    f' more than steppers, {self.microsteps} vs {st_msteps}')
+                    f'motors_sync: Invalid microsteps count, cannot be '
+                    f'more than steppers, {self.microsteps} vs {st_msteps}')
         self.steppers = steppers
 
     def _init_chip_filter(self):
@@ -191,8 +191,8 @@ class MotionAxis:
                 f"motors_sync: Invalid model '{model_name}'")
         if len(model_coeffs) != model_config['ct']:
             raise self.config.error(
-                f"motors_sync: Model {model_name} requires"
-                f" {model_config['ct']} coefficients")
+                f"motors_sync: Model {model_name} requires "
+                f"{model_config['ct']} coefficients")
         if model_coeffs['a'] == model_config['a']:
             raise self.config.error(
                 f"motors_sync: Coefficient 'a' cannot be "
@@ -288,11 +288,11 @@ class MotorsSync:
             self.do_level = False
             axes = [a.lower() for a in self.config.getlist('axes')]
         else:
-            raise self.config.error(f"motors_sync: Not supported"
-                                    f" kinematics '{self.conf_kin}'")
+            raise self.config.error(f"motors_sync: Not supported "
+                                    f"kinematics '{self.conf_kin}'")
         if any(axis not in valid_axes for axis in axes):
-            raise self.config.error(f"motors_sync: Invalid axes"
-                                    f" parameter '{','.join(axes)}'")
+            raise self.config.error(f"motors_sync: Invalid axes "
+                                    f"parameter '{','.join(axes)}'")
         self.motion = {ax: MotionAxis(ax, self, self.config) for ax in axes}
         if self.conf_kin not in LEVELING_KINEMATICS:
             return
@@ -397,29 +397,29 @@ class MotorsSync:
             el.motor_disable(print_time)
         self.toolhead.dwell(offtime)
 
-    def _stepper_move(self, look_stepper, dist):
-        self.force_move.manual_move(look_stepper, dist,
+    def _stepper_move(self, mcu_stepper, dist):
+        self.force_move.manual_move(mcu_stepper, dist,
             self.travel_speed, self.travel_accel)
 
-    def _single_move(self, axis, look_stepper=None, dir=1):
+    def _single_move(self, axis, mcu_stepper=None, dir=1):
         # Move <axis>1 stepper motor by default
-        if look_stepper is None:
-            look_stepper = axis.steppers[1][1]
+        if mcu_stepper is None:
+            mcu_stepper = axis.steppers[1][1]
         move_msteps = axis.move_msteps * axis.move_dir[0] * dir
         dist = axis.move_d * move_msteps
         axis.actual_msteps += move_msteps
         axis.check_msteps += move_msteps
-        self._stepper_move(look_stepper, dist)
+        self._stepper_move(mcu_stepper, dist)
 
     def _buzz(self, axis, rel_moves=25):
         # Fading oscillations by <axis>1 stepper
         rel_buzz_d = axis.rel_buzz_d
-        look_stepper1 = axis.steppers[1][1]
+        mcu_stepper1 = axis.steppers[1][1]
         self._stepper_switch(axis.steppers[0][0], 0, PIN_MIN_TIME, PIN_MIN_TIME)
         for i in reversed(range(0, rel_moves)):
             dist = rel_buzz_d * (i / rel_moves)
-            self._stepper_move(look_stepper1, dist)
-            self._stepper_move(look_stepper1, -dist)
+            self._stepper_move(mcu_stepper1, dist)
+            self._stepper_move(mcu_stepper1, -dist)
 
     def _wait_samples(self, aclient):
         lim = self.reactor.monotonic() + 5.
@@ -506,8 +506,8 @@ class MotorsSync:
             axis.fan_switch(False)
             axis.aclient = axis.chip_config.start_internal_client()
             axis.init_magnitude = axis.magnitude = self._measure(axis)
-            msg =(f"{axis.name.upper()}-Initial magnitude: "
-                  f"{axis.init_magnitude}")
+            msg = (f"{axis.name.upper()}-Initial magnitude: "
+                   f"{axis.init_magnitude}")
         elif state == 'done':
             axis.fan_switch(True)
             axis.aclient.finish_measurements()
@@ -540,7 +540,7 @@ class MotorsSync:
         self._handle_state(axis, 'direction')
         axis.magnitude = axis.new_magnitude
 
-    def axes_level(self, m, s):
+    def _axes_level(self, m, s):
         # Axes leveling by magnitude
         # "m" is a main axis, "s" is a second axis
         delta = m.init_magnitude - s.init_magnitude
@@ -587,7 +587,7 @@ class MotorsSync:
                 return
             continue
 
-    def single_sync(self, m, check_axis=False):
+    def _single_sync(self, m, check_axis=False):
         # "m" is a main axis, just single axis
         if check_axis:
             m.new_magnitude = self._measure(m)
@@ -631,7 +631,7 @@ class MotorsSync:
             # Find min and max axes for axes leveling
             min_ax, max_ax = [c for c in sorted(
                 self.motion.values(), key=lambda i: i.init_magnitude)]
-            self.axes_level(max_ax, min_ax)
+            self._axes_level(max_ax, min_ax)
             axes = self.axes[::-1] if max_ax.name == self.axes[0] else self.axes
             for axis in itertools.cycle(axes):
                 m = self.motion[axis]
@@ -639,7 +639,7 @@ class MotorsSync:
                     if all(self.motion[ax].is_finished for ax in self.axes):
                         break
                     continue
-                self.single_sync(m)
+                self._single_sync(m)
         elif self.sync_method == 'synchronous' and len(self.axes) > 1:
             check_axis = False
             cycling = itertools.cycle(self.axes)
@@ -664,19 +664,19 @@ class MotorsSync:
                         m.check_msteps, s.check_msteps = 0, 0
                     else:
                         continue
-                self.single_sync(m, check_axis)
+                self._single_sync(m, check_axis)
                 check_axis = False
         elif self.sync_method == 'sequential' or len(self.axes) == 1:
             for axis in self.axes:
                 m = self.motion[axis]
-                # To skip _measure() in inner_sync()
+                # To skip _measure() in _single_sync()
                 self._detect_move_dir(m)
                 while True:
                     if m.is_finished:
                         if all(self.motion[ax].is_finished for ax in self.axes):
                             return
                         break
-                    self.single_sync(m)
+                    self._single_sync(m)
         else:
             raise self.gcode.error('Error in sync methods!')
 
@@ -738,7 +738,7 @@ class MotorsSync:
         self.status.check_retry_result('done')
         self.write_log()
 
-    cmd_SYNC_MOTORS_CALIBRATE_help = 'Calibrate synchronization process'
+    cmd_SYNC_MOTORS_CALIBRATE_help = 'Calibrate synchronization process model'
     def cmd_SYNC_MOTORS_CALIBRATE(self, gcmd):
         # Calibrate sync model and model coeffs
         if not hasattr(self, 'cal'):
