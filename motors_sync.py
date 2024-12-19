@@ -56,7 +56,7 @@ class MotionAxis:
         microsteps = config.getint('microsteps', 16)
         self.limits = (min_pos + 10, max_pos - 10, (min_pos + max_pos) / 2)
         self.do_buzz = True
-        self.rel_buzz_d = rd / fspr * 10
+        self.rel_buzz_d = rd / fspr * 5
         self.move_d = rd / fspr / microsteps
         self.chip_name = config.get(f'accel_chip_{name}', '')
         if not self.chip_name:
@@ -413,13 +413,15 @@ class MotorsSync:
 
     def _buzz(self, axis, rel_moves=25):
         # Fading oscillations by <axis>1 stepper
-        rel_buzz_d = axis.rel_buzz_d
-        mcu_stepper1 = axis.steppers[1][1]
+        last_abs_pos = 0
         self._stepper_switch(axis.steppers[0][0], 0, PIN_MIN_TIME, PIN_MIN_TIME)
-        for i in reversed(range(0, rel_moves)):
-            dist = rel_buzz_d * (i / rel_moves)
-            self._stepper_move(mcu_stepper1, dist)
-            self._stepper_move(mcu_stepper1, -dist)
+        for osc in reversed(range(0, rel_moves)):
+            abs_pos = axis.rel_buzz_d * (osc / rel_moves)
+            for inv in [1, -1]:
+                abs_pos *= inv
+                dist = (abs_pos - last_abs_pos)
+                last_abs_pos = abs_pos
+                self._stepper_move(axis.steppers[1][1], dist)
 
     def _wait_samples(self, aclient):
         lim = self.reactor.monotonic() + 5.
