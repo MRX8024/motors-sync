@@ -513,6 +513,8 @@ class MotorsSync:
         elif state == 'done':
             axis.fan_switch(True)
             axis.aclient.finish_measurements()
+            self._stepper_switch(axis.steppers[0][0], 1,
+                                 PIN_MIN_TIME, PIN_MIN_TIME)
             msg = (f"{name}-Motors adjusted by {axis.actual_msteps}/"
                    f"{axis.microsteps} step, magnitude "
                    f"{axis.init_magnitude} --> {axis.magnitude}")
