@@ -64,6 +64,8 @@ class MotionAxis:
             self.microsteps = self.config.getchoice(
                 'microsteps', msteps_dict, default=16)
         self.move_d = rd / fspr / self.microsteps
+        sync.add_connect_task(self._init_steppers)
+        sync.add_connect_task(self._init_fan)
         self.chip_name = config.get(f'accel_chip_{name}', '')
         if not self.chip_name:
             self.chip_name = config.get('accel_chip')
@@ -93,10 +95,6 @@ class MotionAxis:
         if not self.max_retries:
             self.max_retries = self.config.getint(
                 'retries', default=0, minval=0, maxval=10)
-
-    def handle_connect(self):
-        self._init_steppers()
-        self._init_fan()
 
     def flush_motion_data(self):
         self.move_dir = [1, 'unknown']
@@ -255,6 +253,7 @@ class MotorsSync:
         self.stepper_en = self.printer.load_object(config, 'stepper_enable')
         self.printer.register_event_handler("klippy:connect", self._handle_connect)
         self.status = z_tilt.ZAdjustStatus(self.printer)
+        self.connect_tasks = []
         # Read config
         self._init_axes()
         self._init_sync_method()
@@ -267,14 +266,17 @@ class MotorsSync:
         # Variables
         self._init_stat_manager()
 
+    def add_connect_task(self, task):
+        self.connect_tasks.append(task)
+
     def _handle_connect(self):
         self.toolhead = self.printer.lookup_object('toolhead')
         self.travel_speed = self.toolhead.max_velocity / 2
         self.travel_accel = min(self.toolhead.max_accel, 5000)
         self.kin = self.toolhead.get_kinematics()
         self.reactor = self.printer.get_reactor()
-        for axis in self.motion.values():
-            axis.handle_connect()
+        for task in self.connect_tasks: task()
+        self.connect_tasks.clear()
 
     def _init_axes(self):
         valid_axes = ['x', 'y']
