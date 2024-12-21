@@ -30,6 +30,7 @@ MATH_MODELS = {
 }
 
 class MotionAxis:
+    VALID_MSTEPS = [256, 128, 64, 32, 16, 8, 0]
     def __init__(self, name, sync, config):
         self.name = name
         self.sync = sync
@@ -53,11 +54,16 @@ class MotionAxis:
         max_pos = st_section.getfloat('position_max')
         rd = st_section.getfloat('rotation_distance')
         fspr = st_section.getint('full_steps_per_rotation', 200)
-        microsteps = config.getint('microsteps', 16)
         self.limits = (min_pos + 10, max_pos - 10, (min_pos + max_pos) / 2)
         self.do_buzz = True
         self.rel_buzz_d = rd / fspr * 5
-        self.move_d = rd / fspr / microsteps
+        msteps_dict = {m: m for m in self.VALID_MSTEPS}
+        self.microsteps = self.config.getchoice(
+            f'microsteps_{name}', msteps_dict, default=0)
+        if not self.microsteps:
+            self.microsteps = self.config.getchoice(
+                'microsteps', msteps_dict, default=16)
+        self.move_d = rd / fspr / self.microsteps
         self.chip_name = config.get(f'accel_chip_{name}', '')
         if not self.chip_name:
             self.chip_name = config.get('accel_chip')
@@ -66,12 +72,6 @@ class MotionAxis:
         self.conf_fan = config.get(f'head_fan_{name}', '')
         if not self.conf_fan:
             self.conf_fan = config.get('head_fan', None)
-        msteps_dict = {m: m for m in [256, 128, 64, 32, 16, 8, 0]}
-        self.microsteps = self.config.getchoice(
-            'microsteps', msteps_dict, default=0)
-        if not self.microsteps:
-            self.microsteps = self.config.getchoice(
-                f'microsteps_{name}', msteps_dict, default=16)
         mss = self.microsteps / 2
         self.max_step_size = self.config.getint(
             f'max_step_size_{name}', default=0, minval=1, maxval=mss)
