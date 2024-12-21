@@ -63,7 +63,7 @@ class MotionAxis:
         self.chip_name = config.get(f'accel_chip_{name}', '')
         if not self.chip_name:
             self.chip_name = config.get('accel_chip')
-        self.init_chip_config(self.chip_name)
+        sync.add_connect_task(lambda: self.init_chip_config(self.chip_name))
         self._init_models()
         self.conf_fan = config.get(f'head_fan_{name}', '')
         if not self.conf_fan:
