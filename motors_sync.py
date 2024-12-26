@@ -102,7 +102,6 @@ class AccelHelper:
         end_idx = np.searchsorted(raw_data[:, 0],
                     self.aclient.request_end_time, side='right')
         t_accels = raw_data[start_idx:end_idx]
-        self.flush_data()
         return t_accels[:, 1:]
 
     def _calc_magnitude(self):
@@ -227,7 +226,6 @@ class EncoderHelper:
         end_idx = np.searchsorted(raw_data[:, 0],
                     self.request_end_time, side='right')
         t_accels = raw_data[start_idx:end_idx]
-        self.flush_data()
         return t_accels[:, 1]
 
     def normalize_encoder_pos(self, pos):
@@ -693,6 +691,7 @@ class MotorsSync:
         # Measure the impact
         if axis.do_buzz:
             self.buzz(axis)
+        axis.chip_helper.flush_data()
         stepper = axis.steppers[0][0]
         self.stepper_switch(stepper, 1, PIN_MIN_TIME)
         self.stepper_switch(stepper, 0, PIN_MIN_TIME)
