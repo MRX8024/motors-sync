@@ -699,7 +699,10 @@ class MotorsSync:
         axis.chip_helper.update_start_time()
         self.stepper_switch(stepper, 1)
         axis.chip_helper.update_end_time()
-        self.stepper_switch(stepper, 0, PIN_MIN_TIME, PIN_MIN_TIME)
+        if axis.do_buzz:
+            self.buzz(axis, 5)
+        else:
+            self.stepper_switch(stepper, 0)
         return axis.calc_deviation()
 
     def homing(self):
