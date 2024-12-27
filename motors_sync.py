@@ -11,8 +11,6 @@ from . import z_tilt
 PLOT_PATH = '~/printer_data/config/adxl_results/motors_sync'
 PIN_MIN_TIME = 0.010            # Minimum wait time to enable hardware pin
 MOTOR_STALL_TIME = 0.100        # Minimum wait time to enable motor pin
-ACCEL_FILTER_THRESHOLD = 3000   # Accelerometer filter disabled at lower sampling rate
-AXES_LEVEL_DELTA = 2000         # Magnitude difference between axes in _axes_level()
 LEVELING_KINEMATICS = (         # Kinematics with interconnected axes
     ['corexy', 'limited_corexy'])
 
@@ -31,6 +29,8 @@ MATH_MODELS = {
 }
 
 class AccelHelper:
+    AXES_LEVEL_DELTA = 2000
+    ACCEL_FILTER_THRESHOLD = 3000
     def __init__(self, axis, chip_name):
         self.axis = axis
         self.sync = axis.sync
@@ -51,7 +51,7 @@ class AccelHelper:
     def init_chip_config(self, chip_name):
         self.accel_config = self.printer.lookup_object(chip_name)
         if hasattr(self.accel_config, 'data_rate'):
-            if self.accel_config.data_rate > ACCEL_FILTER_THRESHOLD:
+            if self.accel_config.data_rate > self.ACCEL_FILTER_THRESHOLD:
                 self.axis._init_chip_filter()
             else:
                 self.chip_filter = lambda data: data
@@ -141,6 +141,7 @@ class AccelHelper:
 
 
 class EncoderHelper:
+    AXES_LEVEL_DELTA = 5
     MIN_SAMPLE_PERIOD = 0.000400
     def __init__(self, axis, chip_name):
         self.axis = axis
@@ -776,7 +777,8 @@ class MotorsSync:
         # Axes leveling by magnitude
         # "m" is a main axis, "s" is a second axis
         delta = m.init_magnitude - s.init_magnitude
-        if delta <= AXES_LEVEL_DELTA:
+        target_delta = m.chip_helper.AXES_LEVEL_DELTA
+        if delta <= target_delta:
             return
         self.gcode.respond_info(
             f'Start axes level, delta: {delta:.2f}', True)
@@ -808,7 +810,7 @@ class MotorsSync:
                 force_exit = True
             m.magnitude = m.new_magnitude
             delta = m.new_magnitude - s.magnitude
-            if (delta < AXES_LEVEL_DELTA
+            if (delta < target_delta
                     or m.new_magnitude < s.magnitude
                     or force_exit):
                 self.gcode.respond_info(
