@@ -414,9 +414,12 @@ class MotionAxis:
                 f"{model_coeffs['a']} for a '{model_name}' model")
         self.model_name = model_name
         self.model_coeffs = tuple(model_coeffs.values())
+        self.model_scale = self.microsteps / 16
+        if model_name == 'enc_auto':
+            self.model_scale = 1
         self.model_solve = lambda fx=None: model_config['f'](
             fx if fx is not None else self.new_magnitude,
-            self.model_coeffs)
+            self.model_coeffs) * self.model_scale
 
     def _init_chip_filter(self):
         filters = ['default', 'median', 'kalman']
@@ -977,9 +980,9 @@ class MotorsSync:
     cmd_SYNC_MOTORS_CALIBRATE_help = 'Calibrate synchronization process model'
     def cmd_SYNC_MOTORS_CALIBRATE(self, gcmd):
         # Calibrate sync model and model coeffs
-        if not hasattr(self, 'cal'):
-            cal = MotorsSyncCalibrate(self)
-        cal.run_calibrate(gcmd)
+        if not hasattr(self, 'sync_calibrate_helper'):
+            self.sync_calibrate_helper = MotorsSyncCalibrate(self)
+        self.sync_calibrate_helper.run_calibrate(gcmd)
         self.status.reset()
 
     def get_status(self, eventtime):
@@ -988,9 +991,12 @@ class MotorsSync:
 
 class MotorsSyncCalibrate:
     def __init__(self, sync):
-        self._load_modules()
         self.sync = sync
         self.gcode = sync.gcode
+        try:
+            self._load_modules()
+        except ImportError as e:
+            self.gcode.error(f'Could not import: {e}')
         self.path = os.path.expanduser(PLOT_PATH)
         self.check_export_path()
 
@@ -1014,184 +1020,137 @@ class MotorsSyncCalibrate:
             raise self.gcode.error(
                 f'Error generate path {self.path}: {e}')
 
-    def linear_model(x, a, b):
-        return a*x + b
-
-    def quadratic_model(x, a, b, c):
-        return a*x**2 + b*x + c
-
-    def power_model(x, a, b):
-        return a * np.power(x, b)
-
-    def root_model(x, a, b):
-        return a * np.sqrt(x) + b
-
-    def hyperbolic_model(x, a, b):
-        return a / x + b
-
-    def exponential_model(x, a, b, c):
-        return a * np.exp(b * x) + c
-
-    models = {
-        'Linear': linear_model,
-        'Quadratic': quadratic_model,
-        'Power': power_model,
-        'Root': root_model,
-        'Hyperbolic': hyperbolic_model,
-        'Exponential': exponential_model
+    math_models = {
+        'Linear': (lambda x, a, b: a*x + b, '-.', '#DF8816'),
+        'Quadratic': (lambda x, a, b, c: a*x**2 + b*x + c, '--', 'green'),
+        'Power': (lambda x, a, b: a * np.power(x, b), ':', 'cyan'),
+        'Root': (lambda x, a, b: a * np.sqrt(x) + b, '--', 'magenta'),
+        'Hyperbolic': (lambda x, a, b: a / x + b, '-.', 'purple'),
+        'Exponential': (lambda x, a, b, c: a * np.exp(b*x) + c, ':', 'blue')
     }
 
-    linestyles = {
-        'Linear': '-.',
-        'Quadratic': '--',
-        'Power': ':',
-        'Root': '--',
-        'Hyperbolic': '-.',
-        'Exponential': ':'
-    }
+    def find_best_func(self, x_data, y_data, maxfev=999999999):
+        funcs = []
+        for name, param in self.math_models.items():
+            coeffs, _ = curve_fit(param[0], x_data, y_data, maxfev=maxfev)
+            y_pred = param[0](x_data, *coeffs)
+            rmse = np.sqrt(np.mean((y_data - y_pred) ** 2))
+            funcs.append({'name': name, 'rmse': rmse, 'coeffs': coeffs})
+        funcs = sorted(funcs, key=lambda f: f['rmse'])
+        info = ['Functions RMSE and coefficients']
+        for f in funcs:
+            c_str = ','.join([f'{c:.10f}' for c in f['coeffs']])
+            info.append(f"{f['name']}: RMSE {f['rmse']:.2f} coeffs: {c_str}")
+        return info, (x_data, y_data, funcs)
 
-    colors = {
-        'Linear': '#DF8816',  # Dark Orange
-        'Quadratic': 'green',
-        'Power': 'cyan',
-        'Root': 'magenta',
-        'Hyperbolic': 'purple',
-        'Exponential': 'blue'
-    }
-
-    def find_best_func(self, x_data, y_data, accel_chip='', msteps=16):
-        maxfev = 999999999
-        params = {}
-        y_pred = {}
-        rmse = {}
-        for name, model in self.models.items():
-            params[name], _ = curve_fit(model, x_data, y_data, maxfev=maxfev)
-            y_pred[name] = model(x_data, *params[name])
-            rmse[name] = np.sqrt(np.mean((y_data - y_pred[name]) ** 2))
-        out = {}
-        for name, _ in self.models.items():
-            params_str = ','.join([f'{params[name][i]:.10f}'
-                                   for i in range(len(params[name]))])
-            out[name] = {'val': rmse[name], 'params': params[name],
-                         'equation': params_str}
-        sorted_out = sorted(out.keys(), key=lambda x: out[x]['val'])
-        string_cmd = ['Functions RMSE and coefficients']
-        for num, name in enumerate(sorted_out):
-            string_cmd.append(f'{name}: RMSE {out[name]["val"]:.2f}'
-                              f' coeffs: {out[name]["equation"]}')
-        msg = self.plotter(out, sorted_out, x_data, y_data, accel_chip, msteps)
-        string_cmd.insert(0, msg)
-        return string_cmd
-
-    def plotter(self, out, sorted_out, x_data,
-                y_data, accel_chip, msteps, rmse_lim=20000):
+    def plotter(self, x_data, y_data, funcs, axis, accel_chip,
+                peak_msteps, fullstep, rmse_lim=20000):
         # Plotting
+        pow_lim = (-2, 2)
         fig, ax = plt.subplots()
         ax.scatter(x_data, y_data, label='Samples',
                    color='red', zorder=2, s=10)
         x_fit = np.linspace(min(x_data), max(x_data), 200)
-        for num, name in enumerate(sorted_out):
-            if out[name]['val'] < rmse_lim:
-                string_graph = f"{name} RMSE: {out[name]['val']:.0f}"
-                linestyle = self.linestyles[name]
-                linewidth = 1
-                color = self.colors[name]
-                ax.plot(x_fit, self.models[name](x_fit, *out[name]['params']),
-                        label=string_graph, linestyle=linestyle,
-                        linewidth=linewidth, color=color)
+        for func in funcs:
+            rmse = func['rmse']
+            if rmse < rmse_lim:
+                name = func['name']
+                model = self.math_models[name]
+                _func = model[0](x_fit, *func['coeffs'])
+                c_str = ','.join([f'{c:.3f}' for c in func['coeffs']])
+                string_graph = f"{name} RMSE: {rmse:.2f} coeffs: {c_str}"
+                linestyle = model[1]
+                color = model[2]
+                ax.plot(x_fit, _func, label=string_graph,
+                        linestyle=linestyle, linewidth=1, color=color)
         ax.legend(loc='lower right', fontsize=6, framealpha=1, ncol=1)
+        accel_chip = accel_chip.replace(' ', '-')
         now = datetime.now().strftime('%Y%m%d_%H%M%S')
-        lognames = [now, '_' + accel_chip]
-        title = (f"Dependency of desynchronization"
-                 f" and functions ({''.join(lognames)})")
+        lognames = (f'calibrate_plot_{axis}_{peak_msteps}-'
+                    f'{fullstep}_{accel_chip}_{now}.png')
+        title = (f"Dependency of desynchronization "
+                 f"and functions ({''.join(lognames)})")
         ax.set_title('\n'.join(wrap(title, 66)), fontsize=10)
-        ax.set_xlabel(f'Microsteps: 1/{msteps}')
+        ax.set_xlabel(f'Microsteps: 1/{fullstep}')
         ax.set_xticks(np.arange(0, max(x_data) + 2.5, 2.5))
         ax.xaxis.set_minor_locator(ticker.MultipleLocator(2.5))
         ax.xaxis.set_minor_locator(ticker.AutoMinorLocator())
         ax.set_ylabel('Magnitude')
-        ax.ticklabel_format(axis='y', style='scientific', scilimits=(0, 0))
+        ax.ticklabel_format(axis='y', style='scientific', scilimits=pow_lim)
         ax.yaxis.set_minor_locator(ticker.AutoMinorLocator())
         ax.grid(which='major', color='grey')
         ax.grid(which='minor', color='lightgrey')
-        png_path = os.path.join(
-            self.path, f'interactive_plot_{accel_chip}_{now}.png')
+        png_path = os.path.join(self.path, lognames)
         plt.savefig(png_path, dpi=1000)
         return f'Access to interactive plot at: {png_path}'
 
-    def run_calibrate(self, gcmd):
+    def run_calibrate(self, gcmd, fullstep=16):
         # "m" is a main axis, just single axis
-        repeats = gcmd.get_int('REPEATS', 10, minval=2, maxval=100)
-        axis = gcmd.get('AXIS', next(iter(self.sync.motion))).lower()
-        m = self.sync.motion[axis]
-        peak_point = gcmd.get_int('PEAK_POINT', m.rd * 1250)
+        repeats = gcmd.get_int('REPEATS', 2, minval=2, maxval=100)
+        axis = gcmd.get('AXIS').lower()
+        m = self.sync.motion.get(axis, None)
+        if m is None:
+            self.gcode.error(f'Invalid axis: {axis.upper()}')
+        peak_mstep = gcmd.get_int('DISTANCE', fullstep,
+                                  minval=2, maxval=fullstep*2)
+        need_plot = False
+        need_plot_str = gcmd.get('PLOT', 'True').lower()
+        if need_plot_str == 'true' or need_plot_str == '1':
+            need_plot = True
         self.gcode.respond_info(
             f'Calibration started on {axis} axis with {repeats} '
-            f'repeats, magnitude 0 --> {peak_point}', True)
-        self.gcode.respond_info('Synchronizing before calibration...', True)
-        self.sync.cmd_SYNC_MOTORS(gcmd, True)
-        loop_pos = itertools.cycle(
-            [m.limits[2] - m.rd, m.limits[2], m.limits[2] + m.rd])
+            f'repeats, move to +-{peak_mstep}/16 microstep', True)
+        self.gcode.respond_info('Synchronizing before calibration...')
+        self.sync.cmd_SYNC_MOTORS(gcmd, force_run=True)
         max_steps = 0
-        invs = [1, -1]
-        y_samples = np.array([])
+        invs = [1, -1, -1, 1]
+        y_samples = [-1,]
+        mcu_stepper1 = m.get_steppers()[1]
+        # Scale calibration steps
+        m.move_msteps = m.microsteps // fullstep
+        emul_peak_mstep = peak_mstep * m.move_msteps
+        looped_pos = itertools.cycle([m.rd, -m.rd, -m.rd, m.rd])
         self.sync.handle_state(m, 'start')
-        # Set calibrate step
-        m.move_msteps = 1
-        for i in range(1, repeats + 1):
-            # Restore previous true magnitude after invs[-1]
-            m.new_magnitude = m.magnitude
+        for r in range(1, repeats + 1):
             self.gcode.respond_info(
-                f"Repeats: {i}/{repeats} Try rise to {peak_point:.2f}"
-                f" and lower to ~0 magnitude", True)
-            self.sync.gsend(f'G0 {axis}{next(loop_pos)} '
-                            f'F{self.sync.travel_speed * 60}')
-            do_init = True
+                f'Repeats: {r}/{repeats} Move to +-'
+                f'{emul_peak_mstep}/{m.microsteps} microstep')
+            self.sync.stepper_move(mcu_stepper1, next(looped_pos))
             for inv in invs:
                 m.move_dir[0] = inv
-                while True:
-                    if ((inv == 1 and m.new_magnitude > m.magnitude
-                                  and m.new_magnitude < peak_point)
-                    or (inv == -1 and (m.new_magnitude < m.magnitude
-                                   or m.new_magnitude > peak_point))
-                    or do_init):
-                        if not (do_init and inv == 1):
-                            if m.new_magnitude > (max(y_samples)
-                             if y_samples.size > 0 else 0):
-                                max_steps += m.move_msteps
-                            y_samples = np.append(y_samples, m.new_magnitude)
-                        m.magnitude = m.new_magnitude
-                        self.sync.single_move(m)
-                        m.new_magnitude = self.sync.measure(m)
-                        self.sync.handle_state(m, 'stepped')
-                        do_init = False
-                    else:
-                        break
-            # Move on previous microstep
-            m.move_dir[0] = 1
-            self.sync.single_move(m)
-        # Move on initial mstep
-        m.move_msteps = -m.actual_msteps
-        self.sync.single_move(m)
-        # Finish actions
+                for _ in range(peak_mstep):
+                    self.sync.single_move(m)
+                    m.new_magnitude = self.sync.measure(m)
+                    self.sync.handle_state(m, 'stepped')
+                    if m.new_magnitude > max(y_samples):
+                        max_steps += 1
+                    y_samples.append(m.new_magnitude)
+        m.magnitude = m.new_magnitude
+        # Manual handle_state('done')
         m.fan_switch(True)
         m.chip_helper.finish_measurements()
-        y_samples = np.sort(y_samples)
+        # To array with removed first sample
+        y_samples = np.sort(np.array(y_samples[1:]))
         x_samples = np.linspace(0.01, max_steps, len(y_samples))
-        x_samples_str = ', '.join([str(i) for i in y_samples])
-        y_samples_str = ', '.join([f'{i:.2f}' for i in x_samples])
-        logging.info(f"motors_sync: y_samples: [{x_samples_str}]")
-        logging.info(f"motors_sync: x_samples: [{y_samples_str}]")
+        x_samples_str = ', '.join([f'{i:.2f}' for i in x_samples])
+        y_samples_str = ', '.join([str(i) for i in y_samples])
+        logging.info(f"motors_sync_calibrate: x = [{x_samples_str}]")
+        logging.info(f"motors_sync_calibrate: y = [{y_samples_str}]")
 
         def samples_processing():
             try:
                 os.nice(10)
             except:
                 pass
-            msg = self.find_best_func(x_samples, y_samples,
-                                      m.chip_helper.chip_name, m.microsteps)
+            msg, data = self.find_best_func(x_samples, y_samples)
             for line in msg:
-                self.gcode.respond_info(str(line), True)
+                self.gcode.respond_info(line, True)
+            if not need_plot:
+                return
+            self.gcode.respond_info('Generating a plot...', True)
+            msg = self.plotter(*data, axis, m.chip_helper.chip_name,
+                               peak_mstep, fullstep)
+            self.gcode.respond_info(msg, True)
 
         # Run plotter
         proces = multiprocessing.Process(target=samples_processing)
