@@ -174,7 +174,7 @@ class EncoderHelper:
     def _check_encoder_place(self):
         # Swap duties between motors depending on encoder place
         binded_stepper = self.angle_config.calibration.stepper_name
-        zero_stepper = self.axis.steppers[0][0]
+        zero_stepper = self.axis.get_steppers()[0].get_name()
         if binded_stepper != zero_stepper:
             self.axis.swap_steppers()
 
@@ -262,11 +262,12 @@ class EncoderHelper:
 
 class MotionAxis:
     VALID_MSTEPS = [256, 128, 64, 32, 16, 8, 0]
-    def __init__(self, name, sync, config):
-        self.name = name
+    def __init__(self, sync, name, jx):
         self.sync = sync
-        self.config = config
-        self.printer = config.get_printer()
+        self.name = name
+        self.joint_axes = jx.get(name, [])
+        self.config = sync.config
+        self.printer = self.config.get_printer()
         self.reactor = self.printer.get_reactor()
         self.move_dir = [1, 'unknown']
         self.move_msteps = 2
@@ -279,9 +280,8 @@ class MotionAxis:
         self.curr_retry = 0
         self.is_finished = False
         self.log = []
-        self.aclient = None
         stepper = 'stepper_' + name
-        st_section = config.getsection(stepper)
+        st_section = self.config.getsection(stepper)
         min_pos = st_section.getfloat('position_min', 0)
         max_pos = st_section.getfloat('position_max')
         self.rd = st_section.getfloat('rotation_distance')
@@ -299,9 +299,9 @@ class MotionAxis:
         sync.add_connect_task(self._init_steppers)
         self._init_chip_helper()
         sync.add_connect_task(self._init_fan)
-        self.conf_fan = config.get(f'head_fan_{name}', '')
+        self.conf_fan = self.config.get(f'head_fan_{name}', '')
         if not self.conf_fan:
-            self.conf_fan = config.get('head_fan', None)
+            self.conf_fan = self.config.get('head_fan', None)
         msmax = self.microsteps / 2
         self.max_step_size = self.config.getint(
             f'max_step_size_{name}', default=0, minval=1, maxval=msmax)
@@ -341,24 +341,43 @@ class MotionAxis:
     def swap_steppers(self):
         self.steppers.reverse()
 
+    def get_steppers(self):
+        return self.steppers
+
+    def toggle_main_stepper(self, mode, times=None):
+        if times is None:
+            times = (MOTOR_STALL_TIME,)*2
+        elif len(times) < 2:
+            times = (*times, MOTOR_STALL_TIME)
+        self.sync.stepper_enable(self.steppers[0].get_name(), mode, *times)
+
+    def toggle_steppers(self, mode):
+        for st in self.steppers:
+            self.sync.stepper_enable(st.get_name(), mode,
+                PIN_MIN_TIME, PIN_MIN_TIME)
+
+    def toggle_joint_axes(self, mode):
+        for name in self.joint_axes:
+            self.sync.motion[name].toggle_steppers(mode)
+
     def update_log(self, deviation):
         self.log.append([int(deviation), self.actual_msteps])
 
     def _init_steppers(self):
         kin = self.printer.lookup_object('toolhead').get_kinematics()
-        steppers = [(s.get_name(), s) for s in kin.get_steppers()
-                    if self.name in s.get_name()]
-        if len(steppers) not in (2,):
+        belt_steppers = [s for s in kin.get_steppers()
+                         if 'stepper_' + self.name in s.get_name()]
+        if len(belt_steppers) not in (2,):
             raise self.config.error(f"motors_sync: Not support "
-                                    f"'{len(steppers)}' count of motors")
-        for _steppers in steppers:
-            st_section = self.config.getsection(_steppers[0])
+                                    f"{len(belt_steppers)}' count of motors")
+        for steppers in belt_steppers:
+            st_section = self.config.getsection(steppers.get_name())
             st_msteps = st_section.getint('microsteps')
             if self.microsteps > st_msteps:
                 raise self.config.error(
                     f'motors_sync: Invalid microsteps count, cannot be '
                     f'more than steppers, {self.microsteps} vs {st_msteps}')
-        self.steppers = steppers
+        self.steppers = belt_steppers
 
     def _init_steps_models(self, def_model):
         # todo: rewrite all func logic
@@ -543,7 +562,7 @@ class MotorsSync:
             if len(diff) < 2:
                 continue
             if (attr == 'chip_name' and list(self.motion.values())[0]
-                    .chip_helper.chip_type == 'encoder'):
+                 .chip_helper.chip_type == 'encoder'):
                 continue
             params_str = ', '.join(f"'{attr}: {v}'" for v in diff)
             raise self.config.error(
@@ -558,16 +577,18 @@ class MotorsSync:
             self.do_level = True
             axes = [a.lower() for a in self.config.getlist(
                 'axes', count=2, default=['x', 'y'])]
+            joint_ax = {'x': ['y'], 'y': ['x']}
         elif self.conf_kin == 'cartesian':
             self.do_level = False
             axes = [a.lower() for a in self.config.getlist('axes')]
+            joint_ax = {}
         else:
             raise self.config.error(f"motors_sync: Not supported "
                                     f"kinematics '{self.conf_kin}'")
         if any(axis not in valid_axes for axis in axes):
             raise self.config.error(f"motors_sync: Invalid axes "
                                     f"parameter '{','.join(axes)}'")
-        self.motion = {ax: MotionAxis(ax, self, self.config) for ax in axes}
+        self.motion = {ax: MotionAxis(self, ax, joint_ax) for ax in axes}
         if self.conf_kin in LEVELING_KINEMATICS:
             self._check_common_attr()
 
@@ -582,8 +603,9 @@ class MotorsSync:
                 self.sync_method = methods[0]
         elif (self.sync_method in methods[1:]
               and self.conf_kin not in LEVELING_KINEMATICS):
-            raise self.config.error(f"motors_sync: Invalid sync method: "
-                                    f"{self.sync_method} for '{self.conf_kin}'")
+            raise self.config.error(
+                f"motors_sync: Invalid sync method: {self.sync_method} "
+                f"for '{self.conf_kin}' type kinematics")
 
     def _init_stat_manager(self):
         command = 'SYNC_MOTORS_STATS'
@@ -649,15 +671,12 @@ class MotorsSync:
     def gsend(self, params):
         self.gcode.run_script_from_command(params)
 
-    def stepper_switch(self, stepper, mode, ontime=\
-            MOTOR_STALL_TIME, offtime=MOTOR_STALL_TIME):
+    def stepper_enable(self, stepper, mode, ontime, offtime):
         self.toolhead.dwell(ontime)
         print_time = self.toolhead.get_last_move_time()
         el = self.stepper_en.enable_lines[stepper]
-        if mode:
-            el.motor_enable(print_time)
-        else:
-            el.motor_disable(print_time)
+        el.motor_enable(print_time) if mode \
+            else el.motor_disable(print_time)
         self.toolhead.dwell(offtime)
 
     def stepper_move(self, mcu_stepper, dist):
@@ -667,7 +686,7 @@ class MotorsSync:
     def single_move(self, axis, mcu_stepper=None, dir=1):
         # Move <axis>1 stepper motor by default
         if mcu_stepper is None:
-            mcu_stepper = axis.steppers[1][1]
+            mcu_stepper = axis.get_steppers()[1]
         move_msteps = axis.move_msteps * axis.move_dir[0] * dir
         dist = axis.move_d * move_msteps
         axis.actual_msteps += move_msteps
@@ -676,32 +695,31 @@ class MotorsSync:
 
     def buzz(self, axis, rel_moves=25):
         # Fading oscillations by <axis>1 stepper
-        mcu1_stepper = axis.steppers[1][1]
+        mcu_stepper1 = axis.get_steppers()[1]
         last_abs_pos = 0
-        self.stepper_switch(axis.steppers[0][0], 0, PIN_MIN_TIME, PIN_MIN_TIME)
+        axis.toggle_main_stepper(0, (PIN_MIN_TIME,)*2)
         for osc in reversed(range(0, rel_moves)):
             abs_pos = axis.rel_buzz_d * (osc / rel_moves)
             for inv in [1, -1]:
                 abs_pos *= inv
                 dist = (abs_pos - last_abs_pos)
                 last_abs_pos = abs_pos
-                self.stepper_move(mcu1_stepper, dist)
+                self.stepper_move(mcu_stepper1, dist)
 
     def measure(self, axis):
         # Measure the impact
         if axis.do_buzz:
             self.buzz(axis)
         axis.chip_helper.flush_data()
-        stepper = axis.steppers[0][0]
-        self.stepper_switch(stepper, 1, PIN_MIN_TIME)
-        self.stepper_switch(stepper, 0, PIN_MIN_TIME)
+        axis.toggle_main_stepper(1, (PIN_MIN_TIME,))
+        axis.toggle_main_stepper(0, (PIN_MIN_TIME,))
         axis.chip_helper.update_start_time()
-        self.stepper_switch(stepper, 1)
+        axis.toggle_main_stepper(1)
         axis.chip_helper.update_end_time()
         if axis.do_buzz:
             self.buzz(axis, 5)
         else:
-            self.stepper_switch(stepper, 0)
+            axis.toggle_main_stepper(0)
         return axis.calc_deviation()
 
     def homing(self):
@@ -735,8 +753,7 @@ class MotorsSync:
         elif state == 'done':
             axis.fan_switch(True)
             axis.chip_helper.finish_measurements()
-            self.stepper_switch(axis.steppers[0][0], 1,
-                                 PIN_MIN_TIME, PIN_MIN_TIME)
+            axis.toggle_main_stepper(1, (PIN_MIN_TIME,)*2)
             msg = (f"{name}-Motors adjusted by {axis.actual_msteps}/"
                    f"{axis.microsteps} step, {dim_type} "
                    f"{axis.init_magnitude} --> {axis.magnitude}")
