@@ -13,7 +13,7 @@ this rotor returns to its previous position, causing a distinct impact.
 The impact's force depends on the tension difference between the loops.
 The greater the difference, the stronger the impact; with minimal
 difference, there is no impact. The impact magnitude is measured by an
-accelerometer fixed on the carriage, depending on the kinematic type.
+accelerometer fixed on the carriage, or an encoder mounted to a stepper.
 Synchronization is software-based and resets when any stepper motor in the
 belt loop is disabled. The script determines the rotor's rotation direction
 and gradually adjusts its position until the impact magnitude decreases.
@@ -68,6 +68,8 @@ axes: x,y
 #    Axes on which calibration will be performed.
 accel_chip:
 #    Accelerometer for vibrations collection: adxl345 / mpu9250 etc.
+#encoder_chip_<axis>:
+#    Axis, assigned encoder name, for measuring deviations.
 #chip_filter: median
 #    Filter type for data from the accelerometer: 'median' works well in
 #    most cases, but some particularly noisy printers (fans, etc.) may
@@ -191,6 +193,21 @@ To clear the journal, use the command:
 ```
 SYNC_MOTORS_STATS CLEAR=true
 ```
+
+### Encoder-based synchronization  
+Encoders offer high precision down to 1/128 of a step, are independent of
+the printer’s spatial orientation, and perform the synchronization process
+faster. Any encoders listed in the [Klipper wiki
+](https://www.klipper3d.org/Config_Reference.html#angle) are supported and
+can be installed on any motor in the belt loop. After installation, it is
+recommended to perform any available internal sensor calibrations, and then
+calibration by klipper. By default, the number of microsteps per step is
+determined by the rotor shaft deviation length. However, the synchronization
+model can be calibrated similarly to accelerometer-based calibration. The
+`max_step_size` parameter value can be increased, as this tends to provide
+more stable operation compared to accelerometer and can significantly speed
+up the process. However, on some printers, higher values may still lead to
+unpredictable results.
 
 ### Contacts
 Use the issue GitHub system.
