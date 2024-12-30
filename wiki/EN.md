@@ -1,6 +1,6 @@
 ## Welcome to the stepper motor synchronization project for AWD systems
 
-### Currently, the program supports the following kinematics:
+### Supported kinematics:
 `CoreXY` / `Cartesian` `4 WD`
 
 ### How does it work?
@@ -119,8 +119,7 @@ Enter the `SYNC_MOTORS` command in the terminal on the main web page
 interface and wait for the completion of the process. Some parameters can
 be overridden:
 ```
-SYNC_MOTORS AXES=[<axes>] ACCEL_CHIP=[<chip_name>]
- [RETRY_TOLERANCE=<value>] [RETRIES=<value>]
+SYNC_MOTORS AXES=[<axes>] ACCEL_CHIP=[<chip_name>] [RETRY_TOLERANCE=<value>] [RETRIES=<value>]
 ```
 These can also be specified per axis, for example `ACCEL_CHIP_X`.
 Otherwise, the parameter will override values for the selected or all axes.
@@ -153,28 +152,40 @@ G28 Z
 ```
 
 ### Synchronization model calibration
-Once you ensure the entire process works correctly without random
-measurement errors, you can speed up synchronization by selecting a
-suitable model of the relationship between microsteps and vibration
-magnitude. However, the calibrator is designed to tolerate some
-measurement errors, which should not significantly affect calibration
-results. Enter the `SYNC_MOTORS_CALIBRATE` command in the terminal. Some
-parameters can also be overridden:
+The model represents the dependence of microsteps on magnitude. By default,
+it is linear with a coefficient of 20k, meaning that for every 20k of
+magnitude, there is one microstep of displacement. This is a basic and safe
+value, but for each user, depending on their printer configuration and even
+the accelerometer, this dependence will vary. The purpose of model
+calibration is to find the appropriate function and its coefficients that 
+describe the dependence of microsteps on magnitude specifically for your
+printer.
+
 ```
-SYNC_MOTORS_CALIBRATE AXIS=[<axis>] [PEAK_POINT=<value>] [REPEATS=<value>]
+SYNC_MOTORS_CALIBRATE AXIS=<axis> [DISTANCE=<value>] [REPEATS=<value>] [PLOT=<0/1>]
 ```
-By default, calibration performs 10 iterations of increasing/decreasing
-magnitude from `~0` to `rotation_distance * 1250`, stepping by 1 microstep.
+
+`AXIS` specifies the axis you wish to calibrate. For `corexy`, choose either
+`x` or `y`; the calibration will be unified for both axes. By default, two
+iterations are performed, increasing the rotor position by +16/16 step and
+then decreasing it to -16/16 in 1/16 step increments, during which impacts
+are measured and checkpoints are recorded. Calibration is performed in 1/16
+steps to ensure result stability. However, the model will automatically
+scale to match the number of microsteps in your configuration if it differs
+from 16. `DISTANCE` sets relative desired microstep displacement, relative
+to 16. `REPEATS` specifies the number of repetitions. `PLOT` - whether to
+generate a graph, by default is generating.
+
 After completion, you will see a terminal message with a path to the
 graphical output, as well as mathematical models and their parameters.
 Open the file to see something like this:
 
-![](/wiki/pictures/img_1.png)
+![](/wiki/pictures/model_calibrate.png)
 
 Both the terminal and graph display models names and their RMSE
 (root-mean-square-error) relative to measured points, sorted in ascending
-order. Select the model with the smallest deviation and its parameters
-from the terminal, put in your configuration file. For example:
+order. Select the model with the smallest deviation from the points, and its
+parameters from the terminal, put in your configuration file. For example:
 ```
 model: exponential
 model_coeffs:
@@ -225,4 +236,3 @@ skills were no longer enough for the further development of the project.
 In spring 2024, I (@mrx8024) became interested in the idea and decided to
 continue development.
 
-### [Support the project](https://ko-fi.com/altzbox)
