@@ -175,8 +175,13 @@ class EncoderHelper:
     def _check_encoder_place(self):
         # Swap duties between motors depending on encoder place
         binded_stepper = self.angle_config.calibration.stepper_name
-        zero_stepper = self.axis.get_steppers()[0].get_name()
-        if binded_stepper != zero_stepper:
+        axis_steppers = [s.get_name() for s in self.axis.get_steppers()]
+        if binded_stepper not in axis_steppers:
+            raise self.config.error(
+                f"motors_sync: Encoder '{self.chip_name}' stepper: "
+                f"'{binded_stepper}' not in '{self.axis.name}' "
+                f"axis steppers: '{', '.join(axis_steppers)}'")
+        if binded_stepper != axis_steppers[0]:
             self.axis.swap_steppers()
 
     def handle_batch(self, batch):
@@ -258,6 +263,7 @@ class EncoderHelper:
             self.axis.move_dir = [-1, 'Backward']
         else:
             self.axis.move_dir = [1, 'Forward']
+        self.sync.handle_state(self.axis, 'direction')
         self.axis.new_magnitude = self.axis.magnitude
 
 
@@ -464,8 +470,9 @@ class MotionAxis:
         if not accel_chip_name and not enc_chip_name:
             accel_chip_name = self.config.get('accel_chip', '')
         if not accel_chip_name and not enc_chip_name:
-            raise self.config.error(f"motors_sync: Sensors type 'accel_chip' "
-                                    f"or 'encoder_chip' must be provided")
+            raise self.config.error(
+                f"motors_sync: Sensors type 'accel_chip' or "
+                f"'encoder_chip_<axis>' must be provided")
         if accel_chip_name:
             # Init accelerometer config on klippy connect
             self.sync.add_connect_task(lambda: setattr(self,
