@@ -397,23 +397,22 @@ class MotionAxis:
             'exponential': {'ct': 3, 'a': 0, 'f': MATH_MODELS['exponential']},
             'enc_auto': {'ct': 1, 'a': -1, 'f': MATH_MODELS['enc_auto']},
         }
-        model_name = self.config.get(f'model_{self.name}', '').lower()
-        if not model_name:
-            model_name = self.config.get('model', def_model[0]).lower()
-        coeffs_vals = self.config.getfloatlist(f'model_coeffs_{self.name}', '')
-        if not coeffs_vals:
-            coeffs_vals = self.config.getfloatlist('model_coeffs', def_model[1])
+        model = self.config.getlist(f'steps_model_{self.name}', None)
+        if model is None:
+            model = self.config.getlist('steps_model', def_model)
+        model_name = model[0]
+        coeffs_vals = list(map(float, model[1:]))
         coeffs_args = [chr(97 + i) for i in range(len(coeffs_vals) + 1)]
         model_coeffs = {arg: float(val)
                         for arg, val in zip(coeffs_args, coeffs_vals)}
         model_config = models.get(model_name, None)
         if model_config is None:
             raise self.config.error(
-                f"motors_sync: Invalid model '{model_name}'")
+                f"motors_sync: Invalid steps model '{model_name}'")
         if len(model_coeffs) != model_config['ct']:
             raise self.config.error(
-                f"motors_sync: Model '{model_name}' requires "
-                f"{model_config['ct']} coefficients")
+                f"motors_sync: Steps model '{model_name}' "
+                f"requires {model_config['ct']} coefficients")
         if model_coeffs['a'] == model_config['a']:
             raise self.config.error(
                 f"motors_sync: Coefficient 'a' cannot be "
@@ -478,13 +477,13 @@ class MotionAxis:
             self.sync.add_connect_task(lambda: setattr(self,
                 'chip_helper', AccelHelper(self, accel_chip_name)))
             self._init_chip_filter()
-            def_steps_model = ['linear', [20000, 0]]
+            def_steps_model = ['linear', 20000, 0]
             self._init_steps_models(def_steps_model)
         elif enc_chip_name:
             # Init encoder config on klippy connect
             self.sync.add_connect_task(lambda: setattr(self,
                 'chip_helper', EncoderHelper(self, enc_chip_name)))
-            def_steps_model = ['enc_auto', (self.move_d,)]
+            def_steps_model = ['enc_auto', self.move_d]
             self._init_steps_models(def_steps_model)
 
     def _create_fan_switch(self, method):
@@ -1028,12 +1027,12 @@ class MotorsSyncCalibrate:
                 f'Error generate path {self.path}: {e}')
 
     math_models = {
-        'Linear': (lambda x, a, b: a*x + b, '-.', '#DF8816'),
-        'Quadratic': (lambda x, a, b, c: a*x**2 + b*x + c, '--', 'green'),
-        'Power': (lambda x, a, b: a * np.power(x, b), ':', 'cyan'),
-        'Root': (lambda x, a, b: a * np.sqrt(x) + b, '--', 'magenta'),
-        'Hyperbolic': (lambda x, a, b: a / x + b, '-.', 'purple'),
-        'Exponential': (lambda x, a, b, c: a * np.exp(b*x) + c, ':', 'blue')
+        'linear': (lambda x, a, b: a*x + b, '-.', '#DF8816'),
+        'quadratic': (lambda x, a, b, c: a*x**2 + b*x + c, '--', 'green'),
+        'power': (lambda x, a, b: a * np.power(x, b), ':', 'cyan'),
+        'root': (lambda x, a, b: a * np.sqrt(x) + b, '--', 'magenta'),
+        'hyperbolic': (lambda x, a, b: a / x + b, '-.', 'purple'),
+        'exponential': (lambda x, a, b, c: a * np.exp(b*x) + c, ':', 'blue')
     }
 
     def find_best_func(self, x_data, y_data, maxfev=999999999):
@@ -1061,14 +1060,14 @@ class MotorsSyncCalibrate:
         for func in funcs:
             rmse = func['rmse']
             if rmse < rmse_lim:
-                name = func['name']
-                model = self.math_models[name]
+                upname = func['name'].capitalize()
+                model = self.math_models[func['name']]
                 _func = model[0](x_fit, *func['coeffs'])
                 c_str = ','.join([f'{c:.3f}' for c in func['coeffs']])
-                string_graph = f"{name} RMSE: {rmse:.2f} coeffs: {c_str}"
+                func_str = f"{upname} RMSE: {rmse:.2f} coeffs: {c_str}"
                 linestyle = model[1]
                 color = model[2]
-                ax.plot(x_fit, _func, label=string_graph,
+                ax.plot(x_fit, _func, label=func_str,
                         linestyle=linestyle, linewidth=1, color=color)
         ax.legend(loc='lower right', fontsize=6, framealpha=1, ncol=1)
         accel_chip = accel_chip.replace(' ', '-')
@@ -1091,6 +1090,23 @@ class MotorsSyncCalibrate:
         plt.savefig(png_path, dpi=1000)
         return f'Access to interactive plot at: {png_path}'
 
+    def save_config(self, axis, func):
+        configfile = self.sync.printer.lookup_object("configfile")
+        axes = [axis] + [a for a in self.sync.motion[axis].joint_axes]
+        for ax in axes:
+            pname = f'steps_model_{ax}'
+            func_name = func['name']
+            func_coeffs = list(map(str, func['coeffs']))
+            block = func_name + ',\n  ' + ',\n  '.join(func_coeffs)
+            configfile.set('motors_sync', pname, block)
+            msg = f"{pname}: {func_name}, {','.join(func_coeffs)}"
+            self.gcode.respond_info(msg)
+        self.gcode.respond_info(
+            f"Motors sync model for '{', '.join(axes)}' axis "
+             "has been calibrated.\nThe SAVE_CONFIG command "
+             "will update the printer config\n file with new "
+             "parameters and restart the printer.")
+
     def run_calibrate(self, gcmd, fullstep=16):
         # "m" is a main axis, just single axis
         repeats = gcmd.get_int('REPEATS', 2, minval=2, maxval=100)
@@ -1105,8 +1121,8 @@ class MotorsSyncCalibrate:
         if need_plot_str == 'true' or need_plot_str == '1':
             need_plot = True
         self.gcode.respond_info(
-            f'Calibration started on {axis} axis with {repeats} '
-            f'repeats, move to +-{peak_mstep}/16 microstep', True)
+            f'Calibration started on {axis.upper()} axis with '
+            f'{repeats} repeats, move to +-{peak_mstep}/16 microstep')
         self.gcode.respond_info('Synchronizing before calibration...')
         self.sync.cmd_SYNC_MOTORS(gcmd, force_run=True)
         max_steps = 0
@@ -1143,17 +1159,17 @@ class MotorsSyncCalibrate:
         y_samples_str = ', '.join([str(i) for i in y_samples])
         logging.info(f"motors_sync_calibrate: x = [{x_samples_str}]")
         logging.info(f"motors_sync_calibrate: y = [{y_samples_str}]")
+        # In general, it should be taken out to samples_processing()
+        msg, data = self.find_best_func(x_samples, y_samples)
+        self.save_config(axis, data[-1][0])
+        if not need_plot:
+            return
 
         def samples_processing():
             try:
                 os.nice(10)
             except:
                 pass
-            msg, data = self.find_best_func(x_samples, y_samples)
-            for line in msg:
-                self.gcode.respond_info(line, True)
-            if not need_plot:
-                return
             self.gcode.respond_info('Generating a plot...', True)
             msg = self.plotter(*data, axis, m.chip_helper.chip_name,
                                peak_mstep, fullstep)

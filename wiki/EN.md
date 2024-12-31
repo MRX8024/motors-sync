@@ -51,7 +51,7 @@ bash ~/motors-sync/install.sh
 Most parameters support self-assignment to an axis, e.g., for `axes: x,y`,
 the parameter `accel_chip` can be described as `accel_chip_x` and
 `accel_chip_y`. However, `accel_chip` remains the default parameter if no
-axis-specific value is defined. This is relevant for Cartesian kinematics,
+axis-specific value is defined. This is relevant for `cartesian` kinematics,
 which may have different implementations of drives.
 
 Parameters starting with `#` are optional. They have default values listed
@@ -87,12 +87,9 @@ accel_chip:
 #    trying to keep it at the same level.
 #    Methods for synchronizing axis/axes on NOT-interconnected kinematics:
 #    'sequential' - axes are calibrated sequentially. (default)
-#model: linear
-#    Model of the dependence of the microstep displacement of a stepper
-#    motor on the magnitude of the measured oscillations. Supported
-#    models: linear, quadratic, power, root, hyperbolic, exponential.
-#model_coeffs: 20000, 0
-#    Coefficients above the described model, for calculating microsteps.
+#steps_model: linear, 20000, 0
+#    Mathematical model and its coefficients representing the dependence
+#    of stepper motor microstep displacement on the measured magnitude.
 #max_step_size: 3
 #    The maximum number of microsteps that the motor can take move at time,
 #    to achieve the planned magnitude.
@@ -176,23 +173,32 @@ from 16. `DISTANCE` sets relative desired microstep displacement, relative
 to 16. `REPEATS` specifies the number of repetitions. `PLOT` - whether to
 generate a graph, by default is generating.
 
-After completion, you will see a terminal message with a path to the
-graphical output, as well as mathematical models and their parameters.
+After the calibration is complete, you will see a prompt in the terminal to
+save the model to the config, along with the path to the graphical output.
 Open the file to see something like this:
 
-![](/wiki/pictures/model_calibrate.png)
+<img src="/wiki/pictures/model_calibrate.png" width="600">
 
-Both the terminal and graph display models names and their RMSE
-(root-mean-square-error) relative to measured points, sorted in ascending
-order. Select the model with the smallest deviation from the points, and its
-parameters from the terminal, put in your configuration file. For example:
-```
-model: exponential
-model_coeffs:
-    68002.9000704507,
-    0.0293145933,
-    -70739.3609995888
-```
+The graph's table displays model names, coefficients, and RMSE
+(Root Mean Square Error) from the measured points, sorted in ascending
+order. If you are unsure whether the algorithm worked correctly in your
+case, open an issue and attach the graph.
+
+For `corexy` kinematics, the model is saves to both axes by default. 
+For other kinematics, choose one of the following methods:
+* Calibrate the model for each axis individually, if that makes sense;
+* Manually assign the calibrated model to the desired axes:
+  ```
+  steps_model_a: ...
+  steps_model_b: ...
+  steps_model_c: ...
+  ```
+* Manually assign a common model to all axes:
+  ```
+  steps_model: ...
+  ```
+It is worth remembering that the value for a specific axis is more
+significant than for all axes, and will override it.
 
 ### Calibration statistics
 Each synchronization iteration is logged in a journal located in the
