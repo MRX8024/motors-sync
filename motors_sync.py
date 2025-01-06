@@ -419,12 +419,19 @@ class MotionAxis:
                 f"{model_coeffs['a']} for a '{model_name}' model")
         self.model_name = model_name
         self.model_coeffs = tuple(model_coeffs.values())
-        self.model_scale = self.microsteps / 16
+        model_scale = self.microsteps / 16
         if model_name == 'enc_auto':
-            self.model_scale = 1
-        self.model_solve = lambda fx=None: model_config['f'](
-            fx if fx is not None else self.new_magnitude,
-            self.model_coeffs) * self.model_scale
+            model_scale = 1
+        def model_solve(fx=None):
+            if fx is None:
+                fx = self.new_magnitude
+            res = model_config['f'](fx, self.model_coeffs)
+            if np.isnan(res):
+                self.sync.handle_state(self,
+                    f"Microsteps calculation returned NaN "
+                    f"for {self.name.capitalize()} axis")
+            return res * model_scale
+        self.model_solve = model_solve
 
     def _init_chip_filter(self):
         filters = ['default', 'median', 'kalman']
@@ -773,13 +780,11 @@ class MotorsSync:
                    f"Back on last {dim_type}: {axis.magnitude} on "
                    f"{axis.actual_msteps}/{axis.microsteps} step "
                    f"to reach {axis.retry_tolerance}")
-        elif state == 'error':
+        else:
             for axis in [c for a, c in self.motion.items() if a in self.axes]:
                 axis.fan_switch(True)
                 axis.chip_helper.finish_measurements()
-            raise self.gcode.error('Too many retries')
-        else:
-            raise self.gcode.error(f'Unknown state: {state}')
+            raise self.gcode.error(state)
         self.gcode.respond_info(msg, True)
 
     def _axes_level(self, m, s):
@@ -813,7 +818,7 @@ class MotorsSync:
                     if m.curr_retry > m.max_retries:
                         self.handle_state(m, 'done')
                         self.write_log(m)
-                        self.handle_state(m, 'error')
+                        self.handle_state(m, 'Too many retries')
                     self.handle_state(m, 'retry')
                     continue
                 force_exit = True
@@ -861,7 +866,7 @@ class MotorsSync:
                     # Write error in log
                     self.write_log(m)
                     self.handle_state(m, 'done')
-                    self.handle_state(m, 'error')
+                    self.handle_state(m, 'Too many retries')
                 self.handle_state(m, 'retry')
                 return
             m.is_finished = True
