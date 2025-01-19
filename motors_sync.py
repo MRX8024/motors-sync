@@ -375,8 +375,8 @@ class MotionAxis:
         belt_steppers = [s for s in kin.get_steppers()
                          if 'stepper_' + self.name in s.get_name()]
         if len(belt_steppers) not in (2,):
-            raise self.config.error(f"motors_sync: Not support "
-                                    f"{len(belt_steppers)}' count of motors")
+            raise self.config.error(f"motors_sync: Not supported "
+                                    f"'{len(belt_steppers)}' count of motors")
         for steppers in belt_steppers:
             st_section = self.config.getsection(steppers.get_name())
             st_msteps = st_section.getint('microsteps')
