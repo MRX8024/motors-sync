@@ -555,6 +555,8 @@ class MotorsSync:
         self.gcode.register_command('SYNC_MOTORS_CALIBRATE',
                                     self.cmd_SYNC_MOTORS_CALIBRATE,
                                     desc=self.cmd_SYNC_MOTORS_CALIBRATE_help)
+        self.gcode.register_command('SYNC_MOTORS_ACCURACY', self.cmd_SYNC_MOTORS_ACCURACY,
+                                    desc=self.cmd_SYNC_MOTORS_ACCURACY_help)
         # Variables
         self.reactor = self.printer.get_reactor()
         self._init_stat_manager()
@@ -996,6 +998,15 @@ class MotorsSync:
         self.sync_calibrate_helper.run_calibrate(gcmd)
         self.status.reset()
 
+    cmd_SYNC_MOTORS_ACCURACY_help = 'Check belt-axis and chip accuracy'
+
+    def cmd_SYNC_MOTORS_ACCURACY(self, gcmd):
+        # Check measurements accuracy
+        if not hasattr(self, 'accuracy_test_helper'):
+            self.accuracy_test_helper = AccuracyTest(self)
+        self.accuracy_test_helper.run_test(gcmd)
+        self.status.reset()
+
     def get_status(self, eventtime):
         return self.status.get_status(eventtime)
 
@@ -1184,6 +1195,176 @@ class MotorsSyncCalibrate:
         proces = multiprocessing.Process(target=samples_processing)
         proces.daemon = False
         proces.start()
+
+
+class AccuracyTest:
+    def __init__(self, sync):
+        self.sync = sync
+        self.gcode = sync.gcode
+        try:
+            self._load_modules()
+        except ImportError as e:
+            self.gcode.error(f'Could not import: {e}')
+        self.path = os.path.expanduser(PLOT_PATH)
+        self.check_export_path()
+
+    @staticmethod
+    def _load_modules():
+        globals().update({
+            'wrap': __import__('textwrap', fromlist=['wrap']).wrap,
+            'multiprocessing': __import__('multiprocessing'),
+            'plt': __import__('matplotlib.pyplot', fromlist=['']),
+            'ticker': __import__('matplotlib.ticker', fromlist=['']),
+        })
+
+    def check_export_path(self):
+        if os.path.exists(self.path):
+            return
+        try:
+            os.makedirs(self.path)
+        except OSError as e:
+            raise self.gcode.error(
+                f'Error generate path {self.path}: {e}')
+
+    def plotter(self, y_target, y_start, y_data, axis, accel_chip):
+        # Plotting
+        pow_lim = (-2, 2)
+        err_lim = 2
+        y_zero = np.median(y_data[:3])
+        rel_y_vals = [y - y_zero if y_zero < y*err_lim < y_zero*err_lim*2
+                      else -1 for y in y_data]
+        y_lim = max(abs(max(rel_y_vals)), abs(min(rel_y_vals)))
+        err_count = rel_y_vals.count(-1)
+        rel_y_vals = [y if y != -1 else y_lim for y in rel_y_vals]
+        x_data = np.arange(0, len(rel_y_vals))
+        fig, ax = plt.subplots()
+        scatter = ax.scatter(
+            x_data, rel_y_vals, c=np.abs(rel_y_vals),
+            cmap=plt.get_cmap('plasma_r'), zorder=2, s=25,
+            label=f'Target magnitude: {y_target:.2f}\n'
+                  f'Start magnitude: {y_start:.2f}\n'
+                  f'Zero point on graph: {y_zero:.2f}\n'
+                  f'Limit exceeding points: {err_count}')
+        if len(x_data) < 100:
+            ax.plot(x_data, rel_y_vals, c='k', alpha=0.2, zorder=2)
+        cbar = plt.colorbar(scatter, ax=ax)
+        formatter = ticker.ScalarFormatter()
+        formatter.set_scientific(True)
+        formatter.set_powerlimits(pow_lim)
+        cbar.ax.yaxis.set_major_formatter(formatter)
+        cbar.set_label('Absolute magnitude deviation')
+        now = datetime.now().strftime('%Y%m%d_%H%M%S')
+        lognames = (f'accuracy_plot_{axis}_{y_start:.0f}_'
+                    f'{accel_chip}_{now}.png')
+        title = f'Axis accuracy samples ({"".join(lognames)})'
+        ax.set_title('\n'.join(wrap(title, 66)), fontsize=10)
+        ax.set_xlabel(f'Samples')
+        ax.xaxis.set_minor_locator(ticker.AutoMinorLocator())
+        ax.set_ylabel('Relative magnitude deviation')
+        ax.ticklabel_format(axis='y', style='scientific', scilimits=pow_lim)
+        ax.yaxis.set_minor_locator(ticker.AutoMinorLocator())
+        ax.grid(which='major', color='grey')
+        ax.grid(which='minor', color='lightgrey')
+        y_lim = max(abs(max(rel_y_vals)), abs(min(rel_y_vals)))
+        y_lim = y_lim + y_lim / 15
+        ax.set_ylim(-y_lim, y_lim)
+        ax.legend(loc='upper left', fontsize=8, framealpha=0.75,
+                  handlelength=0.5, handletextpad=0.5)
+        png_path = os.path.join(self.path, lognames)
+        plt.savefig(png_path, dpi=1000)
+        return (f'Access to interactive plot at: {png_path}\n'
+                f'Limit exceeding points: {err_count}')
+
+    def run_test(self, gcmd):
+        axis = gcmd.get('AXIS', next(iter(self.sync.motion))).lower()
+        m = self.sync.motion[axis]
+        repeats = gcmd.get_int('SAMPLES', 10, minval=5)
+        points_str = gcmd.get('POINT', '0')
+        points = list(map(float, points_str.strip().split(',')))
+        need_plot = False
+        need_plot_str = gcmd.get('PLOT', 'False').lower()
+        if need_plot_str == 'true' or need_plot_str == '1':
+            need_plot = True
+        self.gcode.respond_info(f'Accuracy started on {axis.upper()} axis with '
+                                f'{repeats} samples on {points_str} point(s)')
+        self.gcode.respond_info('Synchronizing before test...')
+        self.sync.cmd_SYNC_MOTORS(gcmd, force_run=True)
+        m.toggle_joint_axes(0)
+        self.sync.handle_state(m, 'start')
+        m.move_msteps = 1
+        samples = {}
+        for point in points:
+            if point != 0:
+                self.gcode.respond_info(f'Try reach {point:.2f} point')
+                m.new_magnitude = self.sync.measure(m)
+                self.sync.handle_state(m, 'static')
+                if m.new_magnitude > point:
+                    raise self.gcode.error(
+                        f'New magnitude: {m.new_magnitude} > target: {point}')
+                m.magnitude = m.new_magnitude
+            while True:
+                self.sync.single_move(m)
+                m.new_magnitude = self.sync.measure(m)
+                self.sync.handle_state(m, 'stepped')
+                if m.new_magnitude < m.magnitude:
+                    raise self.gcode.error(
+                        f'New magnitude: {m.new_magnitude} '
+                        f'< previous magnitude: {m.magnitude}')
+                if m.new_magnitude >= point:
+                    self.gcode.respond_info(f'Point {point:.2f} was reached')
+                    break
+                m.magnitude = m.new_magnitude
+            m.magnitude = m.new_magnitude
+            # Accuracy measurements
+            m.new_magnitude = self.sync.measure(m)
+            self.sync.handle_state(m, 'static')
+            key = round(m.new_magnitude, 2)
+            samples[key] = []
+            for _ in range(repeats):
+                m.new_magnitude = self.sync.measure(m)
+                self.sync.handle_state(m, 'static')
+                samples[key].append(m.new_magnitude)
+        # Manual handle_state('done')
+        m.chip_helper.finish_measurements()
+        m.fan_switch(True)
+        m.toggle_self(1)
+        m.toggle_joint_axes(1)
+        logging.info(f'motors_sync_accuracy: s = {samples}')
+        for t_point, point in enumerate(list(samples.keys())):
+            p_samples = samples[point]
+            max_val = max(p_samples)
+            min_val = min(p_samples)
+            range_val = max_val - min_val
+            avg_val = np.mean(p_samples)
+            median_val = np.median(p_samples)
+            # Calculate the standard deviation
+            deviation_sum = 0
+            len_samples = len(p_samples)
+            for i in range(len_samples):
+                deviation_sum += pow(p_samples[i] - avg_val, 2.)
+            sigma = (deviation_sum / len_samples) ** 0.5
+            # Info
+            self.gcode.respond_info(
+                f'Accuracy results on ~{point} point: maximum '
+                f'{max_val:.2f}, minimum {min_val:.2f}, range '
+                f'{range_val:.2f}, average {avg_val:.2f}, median '
+                f'{median_val:.2f}, standard deviation {sigma:.2f}')
+            if not need_plot:
+                continue
+
+            def samples_processing():
+                try:
+                    os.nice(10)
+                except:
+                    pass
+                msg = self.plotter(points[t_point], point, p_samples,
+                                   axis, m.chip_helper.chip_name)
+                self.gcode.respond_info(msg, True)
+
+            # Run plotter
+            proces = multiprocessing.Process(target=samples_processing)
+            proces.daemon = False
+            proces.start()
 
 
 class KalmanLiteFilter:
