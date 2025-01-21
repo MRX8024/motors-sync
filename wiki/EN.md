@@ -125,6 +125,7 @@ Otherwise, the parameter will override values for the selected or all axes.
 Synchronization is typically performed at the start of printing during
 printer preheating. Add it to a macro or slicer. For example:
 ```
+...
 M140 S   ; set bed temp
 SYNC_MOTORS
 G28 Z
@@ -182,7 +183,8 @@ Open the file to see something like this:
 The graph's table displays model names, coefficients, and RMSE
 (Root Mean Square Error) from the measured points, sorted in ascending
 order. If you are unsure whether the algorithm worked correctly in your
-case, open an issue and attach the graph.
+case, for example, function lines do not repeat your data well (dots) -
+open issue and attach a graph with other data.
 
 For `corexy` kinematics, the model is saves to both axes by default. 
 For other kinematics, choose one of the following methods:
