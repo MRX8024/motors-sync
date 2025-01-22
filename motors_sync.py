@@ -93,6 +93,11 @@ class AccelHelper:
                     raise self.gcode.error(
                         'motors_sync: No data from accelerometer')
 
+    def save_samples(self, raw_data):
+        now = datetime.now().strftime('%Y%m%d_%H%M%S')
+        name = f"{self.axis.name}_{now}.npy"
+        np.save(os.path.join(self.sync.save_path, name), raw_data)
+
     def _get_accel_samples(self):
         self._wait_samples()
         raw_data = np.concatenate(
@@ -102,6 +107,7 @@ class AccelHelper:
         end_idx = np.searchsorted(raw_data[:, 0],
                     self.aclient.request_end_time, side='right')
         t_accels = raw_data[start_idx:end_idx]
+        self.save_samples(t_accels)
         return t_accels[:, 1:]
 
     def _calc_magnitude(self):
@@ -305,6 +311,7 @@ class MotionAxis:
         self.move_d = self.rd / fspr / self.microsteps
         sync.add_connect_task(self._init_steppers)
         self._init_chip_helper()
+        sync.add_connect_task(self._init_sync_position)
         sync.add_connect_task(self._init_fan)
         self.conf_fan = self.config.get(f'head_fan_{name}', '')
         if not self.conf_fan:
@@ -493,6 +500,42 @@ class MotionAxis:
             def_steps_model = ['enc_auto', self.move_d]
             self._init_steps_models(def_steps_model)
 
+    def _get_delta_arm_perp_pos(self):
+        kin = self.printer.lookup_object('toolhead').get_kinematics()
+        idx = ['a', 'b', 'c'].index(self.name)
+        sc = self.config.getsection('printer')
+        print_r = sc.getfloat('print_radius', above=0.) - .1
+        delta_r = self.config.getfloat('delta_radius', print_r,
+                                       above=0., maxval=kin.radius)
+        x, y = (np.cos(np.radians(kin.angles[idx])) * delta_r,
+                np.sin(np.radians(kin.angles[idx])) * delta_r)
+        self.sync_pos_str = (f'G0 X{x} Y{y} Z{5 + self.rel_buzz_d} '
+                             f'F{self.sync.travel_speed * 60}')
+
+    def _get_delta_carr_center_pos(self):
+        # Code not completed
+        self._get_delta_arm_perp_pos()
+
+    def _get_cartesian_center_pos(self):
+        poss = ' '.join(f'{axis}{self.sync.motion[axis].limits[2]}'
+                        for axis in ['x', 'y'])
+        self.sync_pos_str = f'G0 {poss} F{self.sync.travel_speed * 60}'
+
+    def _init_sync_position(self):
+        if self.sync.conf_kin == 'delta':
+            type = self.chip_helper.chip_type
+            if type == 'accelerometer':
+                self._get_delta_arm_perp_pos()
+            elif type == 'encoder':
+                self._get_delta_carr_center_pos()
+            else:
+                raise self.config.error('motors_sync: Unknown chip_type')
+        else:
+            self.sync.add_connect_task(self._get_cartesian_center_pos)
+
+    def move_to_sync_pos(self):
+        self.sync.gsend(self.sync_pos_str)
+
     def _create_fan_switch(self, method):
         if method == 'heater_fan':
             def fan_switch(on=True):
@@ -555,6 +598,9 @@ class MotorsSync:
         self.gcode.register_command('SYNC_MOTORS_CALIBRATE',
                                     self.cmd_SYNC_MOTORS_CALIBRATE,
                                     desc=self.cmd_SYNC_MOTORS_CALIBRATE_help)
+        self.gcode.register_command('SYNC_MOTORS_DELTA_TEST',
+                                    self.cmd_SYNC_MOTORS_DELTA_TEST,
+                                    desc='/')
         # Variables
         self.reactor = self.printer.get_reactor()
         self._init_stat_manager()
@@ -587,18 +633,25 @@ class MotorsSync:
                 f"different for a '{self.conf_kin}' kinematics")
 
     def _init_axes(self):
-        valid_axes = ['x', 'y']
         printer_section = self.config.getsection('printer')
         self.conf_kin = printer_section.get('kinematics')
         if self.conf_kin in LEVELING_KINEMATICS:
+            valid_axes = ['x', 'y']
+            joint_ax = {'x': ['y'], 'y': ['x']}
             self.do_level = True
             axes = [a.lower() for a in self.config.getlist(
-                'axes', count=2, default=['x', 'y'])]
-            joint_ax = {'x': ['y'], 'y': ['x']}
+                'axes', count=2, default=valid_axes)]
         elif self.conf_kin == 'cartesian':
+            valid_axes = ['x', 'y']
+            joint_ax = {}
             self.do_level = False
             axes = [a.lower() for a in self.config.getlist('axes')]
+        elif self.conf_kin == 'delta':
+            valid_axes = ['a', 'b', 'c']
             joint_ax = {}
+            self.do_level = False
+            axes = [a.lower() for a in self.config.getlist(
+                'axes', default=valid_axes)]
         else:
             raise self.config.error(f"motors_sync: Not supported "
                                     f"kinematics '{self.conf_kin}'")
@@ -725,6 +778,7 @@ class MotorsSync:
 
     def measure(self, axis):
         # Measure the impact
+        axis.move_to_sync_pos()
         if axis.do_buzz:
             self.buzz(axis)
         axis.chip_helper.flush_data()
@@ -740,14 +794,11 @@ class MotorsSync:
         return axis.calc_deviation()
 
     def homing(self):
-        # Homing and going to center
+        # Homing
         now = self.reactor.monotonic()
         axes, confs = zip(*self.motion.items())
         if ''.join(axes) not in self.kin.get_status(now)['homed_axes']:
             self.gsend(f"G28 {' '.join(axes)}")
-        center_pos = ' '.join(f'{a}{c.limits[2]}' for a, c in zip(axes, confs))
-        self.gsend(f"G0 {center_pos} F{self.travel_speed * 60}")
-        self.toolhead.dwell(MOTOR_STALL_TIME)
 
     def handle_state(self, axis, state=''):
         name = axis.name.upper()
@@ -930,6 +981,7 @@ class MotorsSync:
 
     cmd_SYNC_MOTORS_help = 'Start motors synchronization'
     def cmd_SYNC_MOTORS(self, gcmd, force_run=False):
+        if not force_run: raise gcmd.error('Not allowed')
         # Live variables
         axes_from_gcmd = gcmd.get('AXES', '')
         if axes_from_gcmd:
@@ -995,6 +1047,21 @@ class MotorsSync:
             self.sync_calibrate_helper = MotorsSyncCalibrate(self)
         self.sync_calibrate_helper.run_calibrate(gcmd)
         self.status.reset()
+
+    def cmd_SYNC_MOTORS_DELTA_TEST(self, gcmd):
+        self.save_path = os.path.expanduser(PLOT_PATH) + '/debug'
+        if not os.path.exists(self.save_path):
+            os.makedirs(self.save_path)
+        am = self.motion[list(self.motion.keys())[0]]
+        self.homing()
+        self.handle_state(am, 'start')
+        al = []
+        steps = int(0.8 / am.move_d)
+        for _ in range(steps):
+            self.stepper_move(am.get_steppers()[1], am.move_d)
+            am.new_magnitude = self.measure(am)
+            al.append(am.new_magnitude)
+        self.handle_state(am, 'done')
 
     def get_status(self, eventtime):
         return self.status.get_status(eventtime)
