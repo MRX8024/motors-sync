@@ -510,17 +510,20 @@ class MotionAxis:
                                        above=0., maxval=kin.radius)
         x, y = (np.cos(np.radians(kin.angles[idx])) * delta_r,
                 np.sin(np.radians(kin.angles[idx])) * delta_r)
-        self.sync_pos_str = (f'G0 X{x} Y{y} Z{5 + self.rel_buzz_d} '
-                             f'F{self.sync.travel_speed * 60}')
+        z = 5 + self.rel_buzz_d
+        self.sync_pos = [x, y, z]
+        self.sync_pos_str = f'G0 X{x} Y{y} Z{z} F{self.sync.travel_speed * 60}'
 
     def _get_delta_carr_center_pos(self):
         # Code not completed
         self._get_delta_arm_perp_pos()
 
     def _get_cartesian_center_pos(self):
-        poss = ' '.join(f'{axis}{self.sync.motion[axis].limits[2]}'
-                        for axis in ['x', 'y'])
-        self.sync_pos_str = f'G0 {poss} F{self.sync.travel_speed * 60}'
+        axes = ['x', 'y']
+        xy_pos = [self.sync.motion[a].limits[2] for a in axes]
+        xy_pos_str = ' '.join(f'{a}{p}' for a,p in zip(axes, xy_pos))
+        self.sync_pos = xy_pos
+        self.sync_pos_str = f'G0 {xy_pos_str} F{self.sync.travel_speed * 60}'
 
     def _init_sync_position(self):
         if self.sync.conf_kin == 'delta':
@@ -535,7 +538,11 @@ class MotionAxis:
             self.sync.add_connect_task(self._get_cartesian_center_pos)
 
     def move_to_sync_pos(self):
-        self.sync.gsend(self.sync_pos_str)
+        pos = self.sync.toolhead.get_position()
+        axes = len(self.sync_pos)
+        if pos[:axes] != self.sync_pos[:axes]:
+            self.sync.gsend(self.sync_pos_str)
+            self.sync.toolhead.dwell(MOTOR_STALL_TIME)
 
     def _create_fan_switch(self, method):
         if method == 'heater_fan':
