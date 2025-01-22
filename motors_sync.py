@@ -296,7 +296,8 @@ class MotionAxis:
         stepper = 'stepper_' + name
         st_section = self.config.getsection(stepper)
         min_pos = st_section.getfloat('position_min', 0)
-        max_pos = st_section.getfloat('position_max')
+        stop_pos = st_section.getfloat('position_endstop')
+        max_pos = st_section.getfloat('position_max', stop_pos)
         self.rd = st_section.getfloat('rotation_distance')
         fspr = st_section.getint('full_steps_per_rotation', 200)
         self.limits = (min_pos + 10, max_pos - 10, (min_pos + max_pos) / 2)
