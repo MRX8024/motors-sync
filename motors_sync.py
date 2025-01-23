@@ -40,6 +40,8 @@ class AccelHelper:
         self.config = self.sync.config
         self.printer = self.sync.printer
         self.aclient = None
+        self._get_axes_mask = None
+        self._init_axes_mask()
         self.chip_filter = None
         self.init_chip_config(chip_name)
         axis.calc_deviation = self._calc_magnitude
@@ -47,6 +49,17 @@ class AccelHelper:
         self.gcode = self.printer.lookup_object('gcode')
         self.toolhead = self.printer.lookup_object('toolhead')
         self.reactor = self.printer.get_reactor()
+
+    def _init_axes_mask(self):
+        if self.sync.conf_kin == 'delta':
+            def func(data):
+                return np.ones(data.shape[1], dtype=bool)
+            self._get_axes_mask = func
+            return
+        def func(data):
+            z_axis = np.mean(np.abs(data), axis=0).argmax()
+            return np.arange(data.shape[1]) != z_axis
+        self._get_axes_mask = func
 
     def init_chip_config(self, chip_name):
         self.accel_config = self.printer.lookup_object(chip_name)
@@ -107,7 +120,8 @@ class AccelHelper:
         end_idx = np.searchsorted(raw_data[:, 0],
                     self.aclient.request_end_time, side='right')
         t_accels = raw_data[start_idx:end_idx]
-        self.save_samples(t_accels)
+        if self.sync.do_save_samples:
+            self.save_samples(t_accels)
         return t_accels[:, 1:]
 
     def _calc_magnitude(self):
@@ -118,10 +132,9 @@ class AccelHelper:
         # cases there may be residual values of toolhead inertia.
         # It is better to take a shifted zone from zero.
         static_zone = range(vects_len // 5, vects_len // 3)
-        z_cut_zone = vects[static_zone, :]
-        z_axis = np.mean(np.abs(z_cut_zone), axis=0).argmax()
-        xy_mask = np.arange(vects.shape[1]) != z_axis
-        magnitudes = np.linalg.norm(vects[:, xy_mask], axis=1)
+        axes_static_vects = vects[static_zone, :]
+        mask = self._get_axes_mask(axes_static_vects)
+        magnitudes = np.linalg.norm(vects[:, mask], axis=1)
         # Add median, Kalman or none filter
         magnitudes = self.chip_filter(magnitudes)
         # Calculate static noise
@@ -612,6 +625,7 @@ class MotorsSync:
         # Variables
         self.reactor = self.printer.get_reactor()
         self._init_stat_manager()
+        self.do_save_samples = False
 
     def add_connect_task(self, task):
         self.connect_tasks.append(task)
@@ -989,7 +1003,6 @@ class MotorsSync:
 
     cmd_SYNC_MOTORS_help = 'Start motors synchronization'
     def cmd_SYNC_MOTORS(self, gcmd, force_run=False):
-        if not force_run: raise gcmd.error('Not allowed')
         # Live variables
         axes_from_gcmd = gcmd.get('AXES', '')
         if axes_from_gcmd:
@@ -1060,6 +1073,7 @@ class MotorsSync:
         self.save_path = os.path.expanduser(PLOT_PATH) + '/debug'
         if not os.path.exists(self.save_path):
             os.makedirs(self.save_path)
+        self.do_save_samples = True
         am = self.motion[list(self.motion.keys())[0]]
         self.homing()
         self.handle_state(am, 'start')
@@ -1070,6 +1084,7 @@ class MotorsSync:
             am.new_magnitude = self.measure(am)
             al.append(am.new_magnitude)
         self.handle_state(am, 'done')
+        self.do_save_samples = False
 
     def get_status(self, eventtime):
         return self.status.get_status(eventtime)
