@@ -798,12 +798,7 @@ class MotorsSync:
             f'Start axes level, delta: {delta:.2f}', True)
         force_exit = False
         while True:
-            # Note: m.axes_steps_diff == s.axes_steps_diff
-            steps_diff = abs(abs(m.check_msteps) - abs(s.check_msteps))
-            if steps_diff >= m.axes_steps_diff:
-                s.new_magnitude = s.magnitude = self.measure(s)
-                self.handle_state(s, 'static')
-                m.check_msteps, s.check_msteps = 0, 0
+            self.check_axis_drift(s, m)
             if m.move_dir[1] == 'unknown':
                 m.detect_move_dir()
             steps_delta = int(m.model_solve() - m.model_solve(s.magnitude))
@@ -835,13 +830,8 @@ class MotorsSync:
                 return
             continue
 
-    def _single_sync(self, m, check_axis=False):
+    def _single_sync(self, m):
         # "m" is a main axis, just single axis
-        if check_axis:
-            m.new_magnitude = self.measure(m)
-            self.handle_state(m, 'static')
-            m.magnitude = m.new_magnitude
-            return
         if m.move_dir[1] == 'unknown':
             if not m.actual_msteps or m.curr_retry:
                 m.new_magnitude = self.measure(m)
@@ -873,6 +863,15 @@ class MotorsSync:
             return
         m.magnitude = m.new_magnitude
 
+    def check_axis_drift(self, m, s):
+        # Note: m.axes_steps_diff == s.axes_steps_diff
+        steps_diff = abs(abs(m.check_msteps) - abs(s.check_msteps))
+        if steps_diff >= m.axes_steps_diff:
+            m.new_magnitude = m.magnitude = self.measure(m)
+            self.handle_state(m, 'static')
+            m.check_msteps, s.check_msteps = 0, 0
+            return True
+
     def _run_sync(self):
         # Axes synchronization
         if self.sync_method == 'alternately' and len(self.axes) > 1:
@@ -889,7 +888,6 @@ class MotorsSync:
                     continue
                 self._single_sync(m)
         elif self.sync_method == 'synchronous' and len(self.axes) > 1:
-            check_axis = False
             cycling = itertools.cycle(self.axes)
             max_ax = [c for c in sorted(
                 self.motion.values(), key=lambda i: i.init_magnitude)][-1]
@@ -905,15 +903,9 @@ class MotorsSync:
                         break
                     continue
                 if m.magnitude < s.magnitude and not s.is_finished:
-                    # None: m['axes_steps_diff'] == s['axes_steps_diff']
-                    steps_diff = abs(abs(m.check_msteps) - abs(s.check_msteps))
-                    if steps_diff >= m.axes_steps_diff:
-                        check_axis = True
-                        m.check_msteps, s.check_msteps = 0, 0
-                    else:
-                        continue
-                self._single_sync(m, check_axis)
-                check_axis = False
+                    self.check_axis_drift(m, s)
+                    continue
+                self._single_sync(m)
         elif self.sync_method == 'sequential' or len(self.axes) == 1:
             for axis in self.axes:
                 m = self.motion[axis]
