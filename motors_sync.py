@@ -14,6 +14,9 @@ MOTOR_STALL_TIME = 0.100        # Minimum wait time to enable motor pin
 LEVELING_KINEMATICS = (         # Kinematics with interconnected axes
     ['corexy', 'limited_corexy'])
 
+TRINAMIC_DRIVERS = ["tmc2130", "tmc2208", "tmc2209", "tmc2240", "tmc2660",
+    "tmc5160"]
+
 MATH_MODELS = {
     "polynomial": lambda fx, coeffs:
         max(np.roots([*coeffs[:-1], coeffs[-1] - fx]).real),
@@ -269,13 +272,15 @@ class EncoderHelper:
 
 class MotionAxis:
     VALID_MSTEPS = [256, 128, 64, 32, 16, 8, 0]
-    def __init__(self, sync, name, jx):
+    def __init__(self, sync, name, jx, ph_off):
         self.sync = sync
         self.name = name
         self.joint_axes = jx.get(name, [])
+        self.phase_offset = ph_off.get(name, None)
         self.config = sync.config
         self.printer = self.config.get_printer()
         self.reactor = self.printer.get_reactor()
+        self.gcode = self.printer.lookup_object('gcode')
         self.move_dir = [1, 'unknown']
         self.move_msteps = 2
         self.actual_msteps = 0
@@ -304,6 +309,7 @@ class MotionAxis:
                 'microsteps', msteps_dict, default=16)
         self.move_d = self.rd / fspr / self.microsteps
         sync.add_connect_task(self._init_steppers)
+        sync.add_connect_task(self._init_tmc_drivers)
         self._init_chip_helper()
         sync.add_connect_task(self._init_fan)
         self.conf_fan = self.config.get(f'head_fan_{name}', '')
@@ -347,9 +353,43 @@ class MotionAxis:
 
     def swap_steppers(self):
         self.steppers.reverse()
+        self.tmcs.reverse()
 
     def get_steppers(self):
         return self.steppers
+
+    def get_phase(self, tmc):
+        field_name = "mscnt"
+        if tmc.fields.lookup_register(field_name, None) is None:
+            # TMC2660 uses MSTEP
+            field_name = "mstep"
+        reg = tmc.fields.lookup_register(field_name)
+        phase = tmc.mcu_tmc.get_register(reg)
+        phase = tmc.fields.get_field(field_name, phase)
+        stepper = self.steppers[self.tmcs.index(tmc)]
+        if not stepper.get_dir_inverted()[0]:
+            return 1023 - phase
+        return phase
+
+    def get_phase_offset(self):
+        p1, p2 = (self.get_phase(t) for t in self.tmcs)
+        return p2 - p1
+
+    def set_phase_offset(self):
+        # Set phase offset by <axis>1 stepper
+        if self.get_phase_offset() != 0:
+            return
+        if self.phase_offset is None:
+            return
+        mode_d = self.phase_offset / 256 * self.move_d * self.microsteps
+        if abs(mode_d) < self.move_d * 2:
+            return
+        self.toggle_main_stepper(0, (PIN_MIN_TIME, PIN_MIN_TIME))
+        self.sync.stepper_move(self.steppers[1], mode_d)
+        msteps = int(mode_d // self.move_d)
+        self.gcode.respond_info(
+            f'{self.name.upper()}-Restore previous '
+            f'position: {msteps}/{self.microsteps} step')
 
     def toggle_main_stepper(self, mode, times=None):
         if times is None:
@@ -385,6 +425,19 @@ class MotionAxis:
                     f'motors_sync: Invalid microsteps count, cannot be '
                     f'more than steppers, {self.microsteps} vs {st_msteps}')
         self.steppers = belt_steppers
+
+    def _init_tmc_drivers(self):
+        self.tmcs = []
+        for stepper in self.steppers:
+            for driver in TRINAMIC_DRIVERS:
+                driver_name = f"{driver} {stepper.get_name()}"
+                module = self.printer.lookup_object(driver_name, None)
+                if module is not None:
+                    self.tmcs.append(module)
+                    break
+            else:
+                raise self.config.error(f"Unable to find TMC driver for "
+                                        f"'{stepper.get_name()}' stepper")
 
     def _init_steps_models(self, def_model):
         # todo: rewrite all func logic
@@ -547,6 +600,7 @@ class MotorsSync:
         self.status = z_tilt.ZAdjustStatus(self.printer)
         self.connect_tasks = []
         # Read config
+        self._init_stat_manager()
         self._init_axes()
         self._init_sync_method()
         # Register commands
@@ -557,7 +611,6 @@ class MotorsSync:
                                     desc=self.cmd_SYNC_MOTORS_CALIBRATE_help)
         # Variables
         self.reactor = self.printer.get_reactor()
-        self._init_stat_manager()
 
     def add_connect_task(self, task):
         self.connect_tasks.append(task)
@@ -569,6 +622,22 @@ class MotorsSync:
         self.kin = self.toolhead.get_kinematics()
         for task in self.connect_tasks: task()
         self.connect_tasks.clear()
+
+    def _init_axes_phase_offset(self, axes):
+        raw_log = self.log_chelper.read_log()
+        if raw_log.size == 0:
+            return {}
+        log = self.log_chelper.parse_raw_log(raw_log)
+        a = {}
+        for p in log[::-1]:
+            if all(ax in a for ax in axes):
+                return a
+            if p[0] in a:
+                continue
+            if not p[1]:
+                continue
+            a[p[0]] = p[6]
+        return a
 
     def _check_common_attr(self):
         # Apply restrictions for LEVELING_KINEMATICS kinematics
@@ -605,7 +674,10 @@ class MotorsSync:
         if any(axis not in valid_axes for axis in axes):
             raise self.config.error(f"motors_sync: Invalid axes "
                                     f"parameter '{','.join(axes)}'")
-        self.motion = {ax: MotionAxis(self, ax, joint_ax) for ax in axes}
+        ph_off = self._init_axes_phase_offset(axes)
+        logging.info(f'motors_sync_phase_offset: {ph_off}')
+        self.motion = {ax: MotionAxis(self, ax, joint_ax, ph_off)
+                       for ax in axes}
         if self.conf_kin in LEVELING_KINEMATICS:
             self._check_common_attr()
 
@@ -627,7 +699,7 @@ class MotorsSync:
     def _init_stat_manager(self):
         command = 'SYNC_MOTORS_STATS'
         filename = 'sync_stats.csv'
-        format = 'axis,status,magnitudes,steps,msteps,retries,date,'
+        format = 'axis,status,magnitudes,steps,msteps,retries,offset,date,'
         def log_parser(log):
             a = {}
             out = []
@@ -680,9 +752,11 @@ class MotorsSync:
                 magnitudes, pos = zip(*axis.log)
                 msteps = axis.microsteps
                 retries = axis.curr_retry
+                offset = axis.get_phase_offset()
                 date = datetime.now().strftime('%Y-%m-%d')
-                manager.write_log([name, status, magnitudes,
-                                   pos, msteps, retries, date])
+                manager.write_log([name, status, magnitudes, pos,
+                                   msteps, retries, offset, date])
+        self.log_chelper = manager
         self.write_log = write_log
 
     def gsend(self, params):
@@ -777,7 +851,7 @@ class MotorsSync:
         elif state == 'retry':
             axis.move_dir[1] = 'unknown'
             msg = (f"{name}-Retries: {axis.curr_retry}/{axis.max_retries} "
-                   f"Back on last {dim_type}: {axis.magnitude} on "
+                   f"Back to last {dim_type}: {axis.magnitude} on "
                    f"{axis.actual_msteps}/{axis.microsteps} step "
                    f"to reach {axis.retry_tolerance}")
         else:
@@ -958,7 +1032,10 @@ class MotorsSync:
         self.status.reset()
         self.homing()
         self.gcode.respond_info('Motors synchronization started', True)
-        # Init axes
+        # Try restore last sync position on cold start
+        for axis in self.axes:
+            self.motion[axis].set_phase_offset()
+        # Init axes magnitudes
         for axis in self.axes:
             self.handle_state(self.motion[axis], 'start')
         # Check if all axes in tolerance
@@ -1237,8 +1314,7 @@ class StatisticsManager:
         if os.path.exists(self.log_path):
             header = ','.join(self.read_log(True))
             if header != self.format:
-                self.error = (f'Invalid format, type {self.cmd_name} '
-                              f'CLEAR=1 to reset and fix statistics')
+                self.clear_log()
         else:
             try:
                 self.write_log(self.format.split(','))
@@ -1261,8 +1337,8 @@ class StatisticsManager:
 
     def clear_log(self):
         os.remove(self.log_path)
-        self.check_log()
         self.error = ''
+        self.check_log()
 
     def parse_raw_log(self, log):
         converted = []
