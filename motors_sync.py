@@ -375,6 +375,9 @@ class MotionAxis:
         p1, p2 = (self.get_phase(t) for t in self.tmcs)
         return p2 - p1
 
+    def update_phase_offset(self):
+        self.phase_offset = self.get_phase_offset()
+
     def set_phase_offset(self):
         # Set phase offset by <axis>1 stepper
         if self.get_phase_offset() != 0:
@@ -845,6 +848,7 @@ class MotorsSync:
             axis.fan_switch(True)
             axis.chip_helper.finish_measurements()
             axis.toggle_main_stepper(1, (PIN_MIN_TIME,)*2)
+            axis.update_phase_offset()
             msg = (f"{name}-Motors adjusted by {axis.actual_msteps}/"
                    f"{axis.microsteps} step, {dim_type} "
                    f"{axis.init_magnitude} --> {axis.magnitude}")
