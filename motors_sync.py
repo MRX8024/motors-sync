@@ -1,6 +1,6 @@
 # Motors synchronization script
 #
-# Copyright (C) 2024  Maksim Bolgov <maksim8024@gmail.com>
+# Copyright (C) 2024-2025  Maksim Bolgov <maksim8024@gmail.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
 import os, logging, time, itertools
@@ -1076,7 +1076,8 @@ class MotorsSync:
 class MotorsSyncCalibrate:
     def __init__(self, sync):
         self.sync = sync
-        self.gcode = sync.gcode
+        self.reactor = sync.printer.get_reactor()
+        self.gcode = sync.printer.lookup_object('gcode')
         try:
             self._load_modules()
         except ImportError as e:
@@ -1237,26 +1238,44 @@ class MotorsSyncCalibrate:
         y_samples_str = ', '.join([str(i) for i in y_samples])
         logging.info(f"motors_sync_calibrate: x = [{x_samples_str}]")
         logging.info(f"motors_sync_calibrate: y = [{y_samples_str}]")
-        # In general, it should be taken out to samples_processing()
-        msg, data = self.find_best_func(x_samples, y_samples)
-        self.save_config(axis, data[-1][0])
-        if not need_plot:
-            return
-
+        self.gcode.respond_info('Data processing...', True)
         def samples_processing():
             try:
                 os.nice(10)
             except:
                 pass
-            self.gcode.respond_info('Generating a plot...', True)
-            msg = self.plotter(*data, axis, m.chip_helper.chip_name,
-                               peak_mstep, fullstep)
-            self.gcode.respond_info(msg, True)
-
+            try:
+                info, data = self.find_best_func(x_samples, y_samples)
+                msg = None
+                if need_plot:
+                    msg = self.plotter(*data, axis, m.chip_helper \
+                                        .chip_name, peak_mstep, fullstep)
+                c_conn.send((False, (msg, data)))
+                c_conn.close()
+            except Exception as e:
+                c_conn.send((True, (e,)))
+                c_conn.close()
         # Run plotter
-        proces = multiprocessing.Process(target=samples_processing)
-        proces.daemon = False
-        proces.start()
+        p_conn, c_conn = multiprocessing.Pipe()
+        proc = multiprocessing.Process(target=samples_processing)
+        proc.daemon = True
+        proc.start()
+        lim_t = 60.
+        now = start_t = last_report_time = self.reactor.monotonic()
+        while proc.is_alive():
+            if now > last_report_time + 5.:
+                last_report_time = now
+                self.gcode.respond_info('Data processing...', True)
+                if now > start_t + lim_t:
+                    self.gcode.error(f'Data processing stuck!')
+            now = self.reactor.pause(now + .1)
+        err, res = p_conn.recv()
+        if err:
+            self.gcode.error(f'Data processing finished '
+                             f'with error: {res[0]}')
+        if res[0]:
+            self.gcode.respond_info(str(res[0]))
+        self.save_config(axis, res[1][-1][0])
 
 
 class KalmanLiteFilter:
