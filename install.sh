@@ -28,6 +28,8 @@ if [ -f "$blk_path" ]; then
           sed -i "\$a origin: https://github.com/MRX8024/$repo.git" "$blk_path"
           sed -i "\$a primary_branch: main" "$blk_path"
           sed -i "\$a managed_services: klipper" "$blk_path"
+          sed -i "\$a requirements: wiki/requirements.txt" "$blk_path"
+          sed -i "\$a system_dependencies: wiki/packages.json" "$blk_path"
           # echo "Including [update_manager] to $blk_path successfully complete"
           sudo service moonraker start
         else
