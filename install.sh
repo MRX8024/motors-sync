@@ -5,14 +5,22 @@ repo_path="$(cd "$(dirname "$0")" && pwd)"
 # Exit if root
 if [ "$(id -u)" = "0" ]; then
     echo "Script must run from non-root !!!"
-    exit
+    exit 1
 fi
 
+klipper_path="$HOME/klipper"
 module_name=motors_sync.py
-module_path=~/klipper/klippy/extras/
+module_path=${klipper_path}/klippy/extras/
 
 # Linking
-ln -sf "$repo_path/$module_name" $module_path
+ln -sf "$repo_path/$module_name" "${module_path}${module_name}"
+
+# Add to .git/info/exclude if not already present
+exclude_file="${klipper_path}/.git/info/exclude"
+exclude_entry="klippy/extras/${module_name}"
+if ! grep -qxF "$exclude_entry" "$exclude_file"; then
+    echo "$exclude_entry" >> "$exclude_file"
+fi
 
 blk_path=~/printer_data/config/moonraker.conf
 # Include update block in moonraker.conf
