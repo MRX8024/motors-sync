@@ -1312,12 +1312,13 @@ class KalmanLiteFilter:
 
 
 class StatisticsManager:
-    def __init__(self, gcode, cmd_name, log_name, log_parser, format):
+    def __init__(self, gcode, cmd_name, log_name, log_parser, format, max_size=1000):
         self._load_modules()
         self.gcode = gcode
         self.cmd_name = cmd_name.upper()
         self.log_parser = log_parser
         self.format = format
+        self.max_size = max_size
         # Register commands
         self.gcode.register_command(self.cmd_name, self.cmd_GET_STATS,
                                     desc=self.cmd_GET_STATS_help)
@@ -1335,28 +1336,36 @@ class StatisticsManager:
 
     def check_log(self):
         if os.path.exists(self.log_path):
-            header = ','.join(self.read_log(True))
-            if header != self.format:
+            header, raw_log = self.read_log(True)
+            if ','.join(header) != self.format:
+                logging.info(f"Log format {','.join(header)} != {self.format}")
                 self.clear_log()
+            elif raw_log.shape[0] > self.max_size:
+                self.trim_log(header, raw_log, self.max_size)
         else:
             try:
                 self.write_log(self.format.split(','))
             except Exception as e:
                 self.error = str(e)
 
-    def read_log(self, only_header=False):
+    def read_log(self, with_header=False):
         with open(self.log_path, mode='r', newline='') as f:
-            reader = csv.reader(f, delimiter=',')
-            header = next(reader)
-            if only_header:
-                return header
-            log = list(reader)
-        return np.array(log)
+            data = list(csv.reader(f, delimiter=','))
+        if with_header:
+            return data[0], np.array(data[1:])
+        return np.array(data[1:])
 
     def write_log(self, line):
         with open(self.log_path, mode='a', newline='') as f:
             writer = csv.writer(f)
             writer.writerow(line)
+
+    def trim_log(self, header, raw_log, lines):
+        last_100_rows = raw_log[-lines:]
+        with open(self.log_path, mode='w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(header)
+            writer.writerows(last_100_rows)
 
     def clear_log(self):
         os.remove(self.log_path)
