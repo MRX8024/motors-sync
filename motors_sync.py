@@ -1208,11 +1208,15 @@ class MotorsSyncCalibrate:
         invs = [1, -1, -1, 1]
         y_samples = [-1,]
         mcu_stepper1 = m.get_steppers()[1]
-        # Scale calibration steps
+        looped_pos = itertools.cycle([m.rd, -m.rd, -m.rd, m.rd])
+        # Manual handle_state('start')
+        m.flush_motion_data()
+        # Scale calibration steps to 1/16
         m.move_msteps = m.microsteps // fullstep
         emul_peak_mstep = peak_mstep * m.move_msteps
-        looped_pos = itertools.cycle([m.rd, -m.rd, -m.rd, m.rd])
-        self.sync.handle_state(m, 'start')
+        m.fan_switch(False)
+        m.chip_helper.start_measurements()
+        m.toggle_main_stepper(0)
         for r in range(1, repeats + 1):
             self.gcode.respond_info(
                 f'Repeats: {r}/{repeats} Move to +-'
@@ -1231,6 +1235,7 @@ class MotorsSyncCalibrate:
         # Manual handle_state('done')
         m.fan_switch(True)
         m.chip_helper.finish_measurements()
+        m.toggle_main_stepper(1)
         # To array with removed first sample
         y_samples = np.sort(np.array(y_samples[1:]))
         x_samples = np.linspace(0.01, max_steps, len(y_samples))
