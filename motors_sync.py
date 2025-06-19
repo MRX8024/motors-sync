@@ -1114,10 +1114,16 @@ class MotorsSyncCalibrate:
         'exponential': (lambda x, a, b, c: a * np.exp(b*x) + c, ':', 'blue')
     }
 
-    def find_best_func(self, x_data, y_data, maxfev=999999999):
+    def find_best_func(self, x_data, y_data, x_prio_len=0, maxfev=999999999):
         funcs = []
+        x_len = len(x_data)
+        weights = np.empty(x_len)
+        weights[:x_prio_len] = 1.0
+        weights[x_prio_len:] = np.linspace(1.0, 0.01, x_len-x_prio_len)
+        sigma = 1 / weights
         for name, param in self.math_models.items():
-            coeffs, _ = curve_fit(param[0], x_data, y_data, maxfev=maxfev)
+            coeffs, _ = curve_fit(param[0], x_data, y_data,
+                                  sigma=sigma, maxfev=maxfev)
             y_pred = param[0](x_data, *coeffs)
             rmse = np.sqrt(np.mean((y_data - y_pred) ** 2))
             funcs.append({'name': name, 'rmse': rmse, 'coeffs': coeffs})
@@ -1239,6 +1245,8 @@ class MotorsSyncCalibrate:
         # To array with removed first sample
         y_samples = np.sort(np.array(y_samples[1:]))
         x_samples = np.linspace(0.01, max_steps, len(y_samples))
+        div = 1. if peak_mstep < 5 else peak_mstep / 5
+        x_prio_len = int(x_samples.shape[0] // div)
         x_samples_str = ', '.join([f'{i:.2f}' for i in x_samples])
         y_samples_str = ', '.join([str(i) for i in y_samples])
         logging.info(f"motors_sync_calibrate: x = [{x_samples_str}]")
@@ -1250,7 +1258,8 @@ class MotorsSyncCalibrate:
             except:
                 pass
             try:
-                info, data = self.find_best_func(x_samples, y_samples)
+                info, data = self.find_best_func(x_samples, y_samples,
+                                                 x_prio_len)
                 msg = None
                 if need_plot:
                     msg = self.plotter(*data, axis, m.chip_helper \
