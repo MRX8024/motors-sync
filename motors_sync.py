@@ -1115,17 +1115,21 @@ class MotorsSyncCalibrate:
     }
 
     def find_best_func(self, x_data, y_data, x_prio_len=0, maxfev=999999999):
-        funcs = []
         x_len = len(x_data)
-        weights = np.empty(x_len)
-        weights[:x_prio_len] = 1.0
-        weights[x_prio_len:] = np.linspace(1.0, 0.01, x_len-x_prio_len)
-        sigma = 1 / weights
+        if x_prio_len == 0 or x_prio_len == x_len:
+            x_prio_len = x_len
+            sigma = None
+        else:
+            weights = np.ones(x_len)
+            weights[x_prio_len:] = np.linspace(1.0, 0.01, x_len - x_prio_len)
+            sigma = 1 / weights
+        funcs = []
         for name, param in self.math_models.items():
             coeffs, _ = curve_fit(param[0], x_data, y_data,
                                   sigma=sigma, maxfev=maxfev)
             y_pred = param[0](x_data, *coeffs)
-            rmse = np.sqrt(np.mean((y_data - y_pred) ** 2))
+            diff = y_data[:x_prio_len] - y_pred[:x_prio_len]
+            rmse = np.sqrt(np.mean(diff ** 2))
             funcs.append({'name': name, 'rmse': rmse, 'coeffs': coeffs})
         funcs = sorted(funcs, key=lambda f: f['rmse'])
         info = ['Functions RMSE and coefficients']
