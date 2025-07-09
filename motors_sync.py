@@ -686,18 +686,13 @@ class MotorsSync:
 
     def _init_sync_method(self):
         methods = ['sequential', 'alternately', 'synchronous', 'default']
-        self.sync_method = self.config.getchoice(
+        _sync_method = self.config.get(
             'sync_method', {m: m for m in methods}, 'default')
-        if self.sync_method == 'default':
-            if self.conf_kin in LEVELING_KINEMATICS:
-                self.sync_method = methods[1]
-            else:
-                self.sync_method = methods[0]
-        elif (self.sync_method in methods[1:]
-              and self.conf_kin not in LEVELING_KINEMATICS):
-            raise self.config.error(
-                f"motors_sync: Invalid sync method: {self.sync_method} "
-                f"for '{self.conf_kin}' type kinematics")
+        self.config.deprecate('sync_method')
+        if self.conf_kin in LEVELING_KINEMATICS:
+            self.sync_method = 'synchronous'
+        else:
+            self.sync_method = 'sequential'
 
     def _init_stat_manager(self):
         command = 'SYNC_MOTORS_STATS'
@@ -865,49 +860,6 @@ class MotorsSync:
             raise self.gcode.error(state)
         self.gcode.respond_info(msg, True)
 
-    def _axes_level(self, m, s):
-        # Axes leveling by magnitude
-        # "m" is a main axis, "s" is a second axis
-        delta = m.init_magnitude - s.init_magnitude
-        target_delta = m.chip_helper.AXES_LEVEL_DELTA
-        if delta <= target_delta:
-            return
-        self.gcode.respond_info(
-            f'Start axes level, delta: {delta:.2f}', True)
-        force_exit = False
-        while True:
-            self.check_axis_drift(s, m)
-            if m.move_dir[1] == 'unknown':
-                m.detect_move_dir()
-            steps_delta = int(m.model_solve() - m.model_solve(s.magnitude))
-            m.move_msteps = min(max(steps_delta, 1), m.max_step_size)
-            self.single_move(m)
-            m.new_magnitude = self.measure(m)
-            self.handle_state(m, 'stepped')
-            if m.new_magnitude > m.magnitude:
-                self.single_move(m, dir=-1)
-                if m.retry_tolerance and m.magnitude > m.retry_tolerance:
-                    m.curr_retry += 1
-                    if m.curr_retry > m.max_retries:
-                        self.handle_state(m, 'done')
-                        self.write_log(m)
-                        self.handle_state(m, 'Too many retries')
-                    self.handle_state(m, 'retry')
-                    continue
-                force_exit = True
-            m.magnitude = m.new_magnitude
-            delta = m.new_magnitude - s.magnitude
-            if (delta < target_delta
-                    or m.new_magnitude < s.magnitude
-                    or force_exit):
-                self.gcode.respond_info(
-                    f"Axes are leveled: {m.name.upper()}: "
-                    f"{m.init_magnitude} --> {m.new_magnitude}, "
-                    f"{s.name.upper()}: {s.init_magnitude} "
-                    f"--> {s.magnitude}, delta: {delta:.2f}", True)
-                return
-            continue
-
     def _single_sync(self, m):
         # "m" is a main axis, just single axis
         if m.move_dir[1] == 'unknown':
@@ -952,20 +904,7 @@ class MotorsSync:
 
     def _run_sync(self):
         # Axes synchronization
-        if self.sync_method == 'alternately' and len(self.axes) > 1:
-            # Find min and max axes for axes leveling
-            min_ax, max_ax = [c for c in sorted(
-                self.motion.values(), key=lambda i: i.init_magnitude)]
-            self._axes_level(max_ax, min_ax)
-            axes = self.axes[::-1] if max_ax.name == self.axes[0] else self.axes
-            for axis in itertools.cycle(axes):
-                m = self.motion[axis]
-                if m.is_finished:
-                    if all(self.motion[ax].is_finished for ax in self.axes):
-                        break
-                    continue
-                self._single_sync(m)
-        elif self.sync_method == 'synchronous' and len(self.axes) > 1:
+        if self.sync_method == 'synchronous' and len(self.axes) > 1:
             cycling = itertools.cycle(self.axes)
             max_ax = [c for c in sorted(
                 self.motion.values(), key=lambda i: i.init_magnitude)][-1]

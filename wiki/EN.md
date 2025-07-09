@@ -80,13 +80,6 @@ accel_chip:
 #    Simple coefficients describing the kalman filter.
 #microsteps: 16
 #    Maximum microstepping displacement of the stepper motor rotor.
-#sync_method: default
-#    Methods for synchronizing two axes on interconnected kinematics:
-#    'alternately' - the axes calibrated alternately, step by step. (default)
-#    'synchronous' - the axes calibrated depending on their magnitude,
-#    trying to keep it at the same level.
-#    Methods for synchronizing axis/axes on NOT-interconnected kinematics:
-#    'sequential' - axes are calibrated sequentially. (default)
 #steps_model: linear, 20000, 0
 #    Mathematical model and its coefficients representing the dependence
 #    of stepper motor microstep displacement on the measured magnitude.
@@ -94,10 +87,9 @@ accel_chip:
 #    The maximum number of microsteps that the motor can take move at time,
 #    to achieve the planned magnitude.
 #axes_steps_diff: 4
-#    The difference in the positions of the motors in microsteps between
-#    the two axes, to update the magnitude of the secondary axis. It is
-#    used in the synchronous method, or in the process of axis alignment
-#    in the alternately method. The typical value is max_step_size + 1.
+#    The difference in motor positions in microsteps between two axes, used
+#    to trigger a check for magnitude shift on the secondary axis in corexy
+#    like kinematics. Default value: max_step_size + 1.
 #retry_tolerance: 0
 #    The forced threshold to which a pair of stepper motors on one belt
 #    will have to lower the magnitude of the oscillations. It's recommended
