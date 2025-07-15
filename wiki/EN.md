@@ -196,7 +196,9 @@ significant than for all axes, and will override it.
 
 ### Calibration statistics
 Each synchronization iteration is logged in a journal located in the
-script directory. You can view sync statistics with the following command:
+script directory. This allows the motor positions to be restored from the
+last successful synchronization upon the first run sync after powering on the
+printer, and also enables viewing sync statistics using the following command:
 ```
 SYNC_MOTORS_STATS
 ```
