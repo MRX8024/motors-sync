@@ -15,6 +15,7 @@ path: ~/motors-sync/
 origin: https://github.com/MRX8024/motors-sync.git
 primary_branch: main
 managed_services: klipper
+virtualenv: ~/klippy-env/
 requirements: wiki/requirements.txt
 system_dependencies: wiki/packages.json
 ```
