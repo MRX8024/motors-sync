@@ -859,6 +859,11 @@ class MotorsSync:
                 axis.fan_switch(True)
                 axis.chip_helper.finish_measurements()
             raise self.gcode.error(state)
+        # 🔵🟡 Add icons before sending
+        if name.startswith("Y"):
+            msg = f"🟡 {msg}"
+        elif name.startswith("X"):
+            msg = f"🔵 {msg}"
         self.gcode.respond_info(msg, True)
 
     def _single_sync(self, m):
@@ -1369,3 +1374,4 @@ class StatisticsManager:
 
 def load_config(config):
     return MotorsSync(config)
+
