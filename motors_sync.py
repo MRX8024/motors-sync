@@ -820,6 +820,7 @@ class MotorsSync:
         center_pos = ' '.join(f'{a}{c.limits[2]}' for a, c in zip(axes, confs))
         self.gsend(f"G0 {center_pos} F{self.travel_speed * 60}")
         self.toolhead.dwell(MOTOR_STALL_TIME)
+        self.toolhead.flush_step_generation()
 
     def handle_state(self, axis, state=''):
         name = axis.name.upper()
