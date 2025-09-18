@@ -101,6 +101,10 @@ accel_chip:
 #    oscillations.
 #head_fan:
 #    Toolhead fan, which will be turned off during sync to eliminate noise.
+#axis_prefix_<axis>:
+#    Allows you to set a custom prefix that will be displayed before the
+#    axis name in terminal outputs. You can use special characters or
+#    Unicode icons to make the axes easier to distinguish.
 ```
 
 ### Motor synchronization

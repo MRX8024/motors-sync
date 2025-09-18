@@ -337,6 +337,9 @@ class MotionAxis:
         if not self.max_retries:
             self.max_retries = self.config.getint(
                 'retries', default=0, minval=0, maxval=10)
+        self.name_prefixed = name.upper()
+        if name_prefix := self.config.get(f'axis_prefix_{name}', None):
+            self.name_prefixed = f'{name_prefix} {self.name_prefixed}'
 
     def flush_motion_data(self):
         self.move_dir = [1, 'unknown']
@@ -823,7 +826,7 @@ class MotorsSync:
         self.toolhead.flush_step_generation()
 
     def handle_state(self, axis, state=''):
-        name = axis.name.upper()
+        name = axis.name_prefixed
         dim_type = axis.chip_helper.dim_type
         if state == 'stepped':
             msteps = axis.move_msteps * axis.move_dir[0]
@@ -838,8 +841,7 @@ class MotorsSync:
             axis.fan_switch(False)
             axis.chip_helper.start_measurements()
             axis.init_magnitude = axis.magnitude = self.measure(axis)
-            msg = (f"{axis.name.upper()}-Initial {dim_type}: "
-                   f"{axis.init_magnitude}")
+            msg = f"{name}-Initial {dim_type}: {axis.init_magnitude}"
         elif state == 'done':
             axis.fan_switch(True)
             axis.chip_helper.finish_measurements()
