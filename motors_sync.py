@@ -957,7 +957,7 @@ class MotorsSync:
             m = self.motion[axis]
             if m.chip_helper.chip_type != 'accelerometer':
                 continue
-            ax_chip = gcmd.get(f'ACCEL_CHIP_{axis.upper()}', chip).lower()
+            ax_chip = gcmd.get(f'ACCEL_CHIP_{axis.upper()}', chip)
             if ax_chip and ax_chip != m.chip_helper.chip_name:
                 try:
                     self.printer.lookup_object(ax_chip)
