@@ -1227,7 +1227,7 @@ class MotorsSyncCalibrate:
                 last_report_time = now
                 self.gcode.respond_info('Data processing...', True)
                 if now > start_t + lim_t:
-                    self.gcode.error(f'Data processing stuck!')
+                    raise self.gcode.error(f'Data processing stuck!')
             now = self.reactor.pause(now + .1)
         err, res = p_conn.recv()
         if err:
