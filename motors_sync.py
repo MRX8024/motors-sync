@@ -1066,13 +1066,19 @@ class MotorsSyncCalibrate:
             weights[x_prio_len:] = np.linspace(1.0, 0.01, x_len - x_prio_len)
             sigma = 1 / weights
         funcs = []
-        for name, param in self.math_models.items():
-            coeffs, _ = curve_fit(param[0], x_data, y_data,
-                                  sigma=sigma, maxfev=maxfev)
-            y_pred = param[0](x_data, *coeffs)
-            diff = y_data[:x_prio_len] - y_pred[:x_prio_len]
-            rmse = np.sqrt(np.mean(diff ** 2))
-            funcs.append({'name': name, 'rmse': rmse, 'coeffs': coeffs})
+        with np.errstate(over='raise', divide='raise', invalid='raise'):
+            for name, (math_model, *params) in self.math_models.items():
+                try:
+                    coeffs, _ = curve_fit(math_model, x_data, y_data,
+                                          sigma=sigma, maxfev=maxfev)
+                    y_pred = math_model(x_data, *coeffs)
+                    diff = y_data[:x_prio_len] - y_pred[:x_prio_len]
+                    rmse = np.sqrt(np.mean(diff ** 2))
+                    funcs.append({'name': name, 'rmse': rmse,
+                                  'coeffs': coeffs})
+                except BaseException as e:
+                    logging.warning(f"motors_sync_calibrate: "
+                                    f"error on {name} - {e}")
         funcs = sorted(funcs, key=lambda f: f['rmse'])
         info = ['Functions RMSE and coefficients']
         for f in funcs:
