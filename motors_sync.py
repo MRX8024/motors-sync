@@ -1023,7 +1023,7 @@ class MotorsSyncCalibrate:
         try:
             self._load_modules()
         except ImportError as e:
-            self.gcode.error(f'Could not import: {e}')
+            raise self.gcode.error(f'motors_sync: Could not import: {e}')
         self.path = os.path.expanduser(PLOT_PATH)
         self.check_export_path()
 
@@ -1150,7 +1150,7 @@ class MotorsSyncCalibrate:
         axis = gcmd.get('AXIS').lower()
         m = self.sync.motion.get(axis, None)
         if m is None:
-            self.gcode.error(f'Invalid axis: {axis.upper()}')
+            raise self.gcode.error(f'Invalid axis: {axis.upper()}')
         peak_mstep = gcmd.get_int('DISTANCE', fullstep,
                                   minval=2, maxval=fullstep*2)
         need_plot = False
@@ -1237,8 +1237,8 @@ class MotorsSyncCalibrate:
             now = self.reactor.pause(now + .1)
         err, res = p_conn.recv()
         if err:
-            self.gcode.error(f'Data processing finished '
-                             f'with error: {res[0]}')
+            raise self.gcode.error(f'Data processing finished '
+                                   f'with error: {res[0]}')
         if res[0]:
             self.gcode.respond_info(str(res[0]))
         self.save_config(axis, res[1][-1][0])
