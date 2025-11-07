@@ -276,7 +276,7 @@ class MotionAxis:
         self.sync = sync
         self.name = name
         self.joint_axes = jx.get(name, [])
-        self.phase_offset = ph_off.get(name, None)
+        self.phase_offset = ph_off.get(name, -1)
         self.config = sync.config
         self.printer = self.config.get_printer()
         self.reactor = self.printer.get_reactor()
@@ -298,6 +298,8 @@ class MotionAxis:
         max_pos = st_section.getfloat('position_max')
         self.rd = st_section.getfloat('rotation_distance')
         fspr = st_section.getint('full_steps_per_rotation', 200)
+        if st_section.getint('microsteps') == 1:
+            fspr = 200
         self.limits = (min_pos + 10, max_pos - 10, (min_pos + max_pos) / 2)
         self.do_buzz = True
         self.rel_buzz_d = self.rd / fspr * 5
@@ -375,6 +377,8 @@ class MotionAxis:
         return phase
 
     def get_phase_offset(self):
+        if not self.tmcs:
+            return -1
         p1, p2 = (self.get_phase(t) for t in self.tmcs)
         return p2 - p1
 
@@ -384,8 +388,6 @@ class MotionAxis:
     def set_phase_offset(self):
         # Set phase offset by <axis>1 stepper
         if self.get_phase_offset() != 0:
-            return
-        if self.phase_offset is None:
             return
         mode_d = self.phase_offset / 256 * self.move_d * self.microsteps
         if abs(mode_d) < self.move_d * 2:
@@ -426,7 +428,7 @@ class MotionAxis:
         for steppers in belt_steppers:
             st_section = self.config.getsection(steppers.get_name())
             st_msteps = st_section.getint('microsteps')
-            if self.microsteps > st_msteps:
+            if self.microsteps > st_msteps and st_msteps != 1:
                 raise self.config.error(
                     f'motors_sync: Invalid microsteps count, cannot be '
                     f'more than steppers, {self.microsteps} vs {st_msteps}')
@@ -442,8 +444,8 @@ class MotionAxis:
                     self.tmcs.append(module)
                     break
             else:
-                raise self.config.error(f"Unable to find TMC driver for "
-                                        f"'{stepper.get_name()}' stepper")
+                self.tmcs.clear()
+                return
 
     def _init_steps_models(self, def_model):
         # todo: rewrite all func logic
