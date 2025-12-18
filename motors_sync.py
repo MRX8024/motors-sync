@@ -7,7 +7,7 @@ import os, logging, traceback, itertools
 from datetime import datetime
 import numpy as np
 import chelper
-from . import z_tilt
+from .z_tilt import ZAdjustStatus
 
 PLOT_PATH = '~/printer_data/config/adxl_results/motors_sync'
 PIN_MIN_TIME = 0.010            # Minimum wait time to enable hardware pin
@@ -32,7 +32,6 @@ MATH_MODELS = {
 
 class BaseKinematics:
     def __init__(self, config, sync):
-        self.sync = sync
         self.stepper_move = sync.stepper_move
         self.stats_helper = sync.stats_helper
         self.msg_helper = sync.msg_helper
@@ -40,7 +39,7 @@ class BaseKinematics:
         self.gcode = self.printer.lookup_object('gcode')
         self.reactor = self.printer.get_reactor()
         self.motion_axes = {}
-        self._init_axes(config)
+        self._init_axes(config, sync)
         sync.add_connect_task(self._handle_connect)
         sync.add_connect_task(lambda: self._init_axes_steppers(config))
 
@@ -49,7 +48,7 @@ class BaseKinematics:
         self.travel_speed = self.toolhead.max_velocity / 2
         self.toolhead_kin = self.toolhead.get_kinematics()
 
-    def _init_axes(self, config):
+    def _init_axes(self, config, sync):
         raise NotImplementedError("Internal error in motors_sync")
 
     def _init_axes_steppers(self, config):
@@ -201,7 +200,7 @@ class CartesianKinematics(BaseKinematics):
             positions.update({axis: (min_pos + max_pos) / 2})
         return [positions.get(a, None) for a in ['x', 'y', 'z']]
 
-    def _init_axes(self, config):
+    def _init_axes(self, config, sync):
         valid_axes = ['x', 'y']
         axes = sorted([a.lower() for a in config.getlist('axes')])
         if any(a not in valid_axes for a in axes):
@@ -209,7 +208,7 @@ class CartesianKinematics(BaseKinematics):
         sync_pos = self.get_axes_rails_center(config, axes)
         ph_offs = self.stats_helper.get_axes_phase_offsets(axes)
         self.motion_axes.update(
-            {ax: MotionAxis(self.sync, ax, axes, ph_offs.get(ax),
+            {ax: MotionAxis(config, sync, ax, axes, ph_offs.get(ax),
                 'stepper_' + ax, sync_pos, False) for ax in axes})
 
     def _init_axes_steppers(self, config):
@@ -263,7 +262,7 @@ class CoreXYKinematics(BaseKinematics):
                     f"motors_sync: Options {params_str} cannot "
                     f"be different for this kinematics")
 
-    def _init_axes(self, config):
+    def _init_axes(self, config, sync):
         valid_axes = ['x', 'y']
         axes = sorted([a.lower() for a in config.getlist(
             'axes', count=len(valid_axes), default=valid_axes)])
@@ -272,7 +271,7 @@ class CoreXYKinematics(BaseKinematics):
         sync_pos = CartesianKinematics.get_axes_rails_center(config, axes)
         ph_offs = self.stats_helper.get_axes_phase_offsets(axes)
         self.motion_axes.update(
-            {ax: MotionAxis(self.sync, ax, axes, ph_offs.get(ax),
+            {ax: MotionAxis(config, sync, ax, axes, ph_offs.get(ax),
                 'stepper_' + ax, sync_pos, False) for ax in axes})
         attr = ['microsteps', 'model_name', 'model_coeffs',
                 'max_step_size', 'axes_steps_diff']
@@ -454,8 +453,7 @@ class BaseSensorHelper:
         self.axis = axis
         self.chip_name = chip_name
         self.dim_type = ''
-        self.sync = axis.sync
-        self.msg_helper = self.sync.msg_helper
+        self.msg_helper = axis.msg_helper
         self.printer = axis.printer
         self.stepper_move = axis.stepper_move
         self.gcode = self.printer.lookup_object('gcode')
@@ -556,49 +554,64 @@ class BaseSensorHelper:
 
 class AccelHelper(BaseSensorHelper):
     ACCEL_FILTER_THRESHOLD = 3000
-    def __init__(self, axis, chip_name):
+    def __init__(self, axis, chip_name, config=None, cfp=None):
+        self.chip_filter_params = cfp
         self.chip_filter = None
         super().__init__(axis, chip_name)
         self.dim_type = 'magnitude'
-        self._init_chip_filter(only_read=True)
+        if config is None and cfp is None:
+            raise Exception("Internal error in motors_sync")
+        if config is not None and cfp is None:
+            self._read_config_chip_filter(config)
 
-    def _init_chip_filter(self, only_read=False):
-        config = self.sync.config
+    def get_chip_filter_params(self):
+        return self.chip_filter_params
+
+    def _read_config_chip_filter(self, config):
         filters = {m: m for m in ['default', 'median', 'kalman']}
         filter = config.getchoice(f'chip_filter_{self.axis.name}',
-                                  filters, 'default').lower()
+                                  filters, default='default').lower()
         if filter == 'default':
-            filter = config.getchoice('chip_filter',
-                                      filters, 'median').lower()
+            filter = config.getchoice('chip_filter', filters,
+                                      default='median').lower()
         if filter == 'median':
             window = config.getint(f'median_size_{self.axis.name}',
-                                   '', minval=3, maxval=9)
+                                   default=None, minval=3, maxval=9)
             if not window:
                 window = config.getint('median_size', default=3,
                                        minval=3, maxval=9)
-            if window % 2 == 0: raise config.error(
-                f"motors_sync: parameter 'median_size' cannot be even")
-            if only_read:
-                return
-            self.chip_filter = lambda samples, w=window: (
-                np.median([samples[i - w:i + w + 1]
-                           for i in range(w, len(samples) - w)], axis=1))
+            if window % 2 == 0:
+                raise config.error(f"motors_sync: parameter "
+                                   f"'median_size' cannot be even")
+            self.chip_filter_params = [filter, window]
         elif filter == 'kalman':
             coeffs = config.getfloatlist(
                 f'kalman_coeffs_{self.axis.name}',
-                default=tuple('' for _ in range(6)), count=6)
+                default=tuple(None for _ in range(6)), count=6)
             if not all(coeffs):
-                coeffs = config.getfloatlist('kalman_coeffs',
-                    default=tuple((1.1, 1., 1e-1, 1e-2, .5, 1.)), count=6)
-                if only_read:
-                    return
-            self.chip_filter = KalmanLiteFilter(*coeffs).process_samples
+                default_coeffs = tuple((1.1, 1., 1e-1, 1e-2, .5, 1.))
+                coeffs = config.getfloatlist(
+                    'kalman_coeffs', default=default_coeffs, count=6)
+            self.chip_filter_params = [filter, coeffs]
+
+    def _get_chip_filter(self):
+        filter_name, params = self.chip_filter_params
+        if filter_name == 'median':
+            w = params
+            def median_filter(samples):
+                return np.median([samples[i - w:i + w + 1]
+                    for i in range(w, len(samples) - w)], axis=1)
+            return median_filter
+        elif filter_name == 'kalman':
+            return KalmanLiteFilter(*params).process_samples
 
     def _init_chip_config(self):
         self.chip_config = self.printer.lookup_object(self.chip_name)
         if self.chip_config.data_rate > self.ACCEL_FILTER_THRESHOLD:
-            self._init_chip_filter()
+            self.chip_filter = self._get_chip_filter()
         else:
+            # Do not use a filter on low samples rate as it will
+            # smooth out the already barely noticeable peaks.
             self.chip_filter = lambda data: data
 
     def calc_deviation(self):
@@ -637,8 +650,8 @@ class AccelHelper(BaseSensorHelper):
 
 
 class BeaconAccelHelper(AccelHelper):
-    def __init__(self, axis, chip_name):
-        super().__init__(axis, chip_name)
+    def __init__(self, axis, chip_name, config=None, cfp=None):
+        super().__init__(axis, chip_name, config, cfp)
 
     def _init_beacon_config(self):
         beacon = self.printer.lookup_object(self.chip_name)
@@ -651,7 +664,7 @@ class BeaconAccelHelper(AccelHelper):
         self.chip_config.batch_bulk = self.chip_config._api_dump
         # Beacon module doesn't have "data_rate" attribute
         # Beacon adxl345 sampling rate > ACCEL_FILTER_THRESHOLD
-        self._init_chip_filter()
+        self.chip_filter = self._get_chip_filter()
 
     def _init_chip_config(self):
         # Move to the end of the klippy:connect queue due beacon
@@ -943,18 +956,17 @@ class MotionAxisMsgHelper:
 
 class MotionAxis:
     VALID_MSTEPS = [256, 128, 64, 32, 16, 8, 0]
-    def __init__(self, sync, name, ph_axes, ph_off,
+    def __init__(self, config, sync, name, ph_axes, ph_off,
                  main_stepper, sync_pos, is_multi_axis):
-        self.sync = sync
         self.name = name
         self.physical_axes = ph_axes
         self.phase_offset = ph_off
         self.start_sync_pos = sync_pos
         self.is_multi_axis = is_multi_axis
-        self.config = sync.config
         self.stepper_move = sync.stepper_move
         self.stats_helper = sync.stats_helper
-        self.printer = self.config.get_printer()
+        self.msg_helper = sync.msg_helper
+        self.printer = config.get_printer()
         self.reactor = self.printer.get_reactor()
         self.gcode = self.printer.lookup_object('gcode')
         sync.add_connect_task(self._handle_connect)
@@ -971,47 +983,47 @@ class MotionAxis:
         self.chip_helper = None
         self.motion_log = []
         self.steppers = None
-        st_section = self.config.getsection(main_stepper)
+        st_section = config.getsection(main_stepper)
         self.rd = st_section.getfloat('rotation_distance')
         fspr = st_section.getint('full_steps_per_rotation', 200)
         self.buzz_moves = {}
         self.rel_buzz_d = self.rd / fspr * 5
         msteps_dict = {m: m for m in self.VALID_MSTEPS}
-        self.microsteps = self.config.getchoice(
+        self.microsteps = config.getchoice(
             f'microsteps_{name}', msteps_dict, default=0)
         if not self.microsteps:
-            self.microsteps = self.config.getchoice(
+            self.microsteps = config.getchoice(
                 'microsteps', msteps_dict, default=16)
         self.move_d = self.rd / fspr / self.microsteps
-        self._init_chip_helper()
-        conf_fans = self.config.getlist(f'head_fan_{name}', '')
+        self._init_chip_helper(config)
+        conf_fans = config.getlist(f'head_fan_{name}', '')
         if not conf_fans:
-            conf_fans = self.config.getlist('head_fan', [])
-        sync.add_connect_task(lambda: self._init_fan(conf_fans))
+            conf_fans = config.getlist('head_fan', [])
+        sync.add_connect_task(lambda: self._init_fan(sync, conf_fans))
         msmax = self.microsteps / 2
-        self.max_step_size = self.config.getint(
+        self.max_step_size = config.getint(
             f'max_step_size_{name}', default=0, minval=1, maxval=msmax)
         if not self.max_step_size:
-            self.max_step_size = self.config.getint(
+            self.max_step_size = config.getint(
                 'max_step_size', default=3, minval=1, maxval=msmax)
-        self.axes_steps_diff = self.config.getint(
+        self.axes_steps_diff = config.getint(
             f'axes_steps_diff_{name}', default=0, minval=1)
         if not self.axes_steps_diff:
-            self.axes_steps_diff = self.config.getint(
+            self.axes_steps_diff = config.getint(
                 'axes_steps_diff', self.max_step_size + 1, minval=1)
         rmin = self.move_d * 1e3
-        self.retry_tolerance = self.config.getfloat(
+        self.retry_tolerance = config.getfloat(
             f'retry_tolerance_{name}', default=0, above=rmin)
         if not self.retry_tolerance:
-            self.retry_tolerance = self.config.getfloat(
+            self.retry_tolerance = config.getfloat(
                 'retry_tolerance', default=0, above=rmin)
-        self.max_retries = self.config.getint(
+        self.max_retries = config.getint(
             f'retries_{name}', default=0, minval=0, maxval=10)
         if not self.max_retries:
-            self.max_retries = self.config.getint(
+            self.max_retries = config.getint(
                 'retries', default=0, minval=0, maxval=10)
         self.name_prefixed = name.upper()
-        if name_prefix := self.config.get(f'axis_prefix_{name}', None):
+        if name_prefix := config.get(f'axis_prefix_{name}', None):
             self.name_prefixed = f'{name_prefix} {self.name_prefixed}'
 
     def _handle_connect(self):
@@ -1033,7 +1045,7 @@ class MotionAxis:
                     f"driver for '{stepper.get_name()}' stepper")
         return tmcs
 
-    def _init_steps_models(self, def_model):
+    def _init_steps_models(self, config, def_model):
         # todo: rewrite all func logic
         models = {
             'linear': {'ct': 2, 'a': None, 'f': MATH_MODELS['polynomial']},
@@ -1044,9 +1056,9 @@ class MotionAxis:
             'exponential': {'ct': 3, 'a': 0, 'f': MATH_MODELS['exponential']},
             'enc_auto': {'ct': 1, 'a': -1, 'f': MATH_MODELS['enc_auto']},
         }
-        model = self.config.getlist(f'steps_model_{self.name}', None)
+        model = config.getlist(f'steps_model_{self.name}', None)
         if model is None:
-            model = self.config.getlist('steps_model', def_model)
+            model = config.getlist('steps_model', def_model)
         model_name = model[0]
         coeffs_vals = list(map(float, model[1:]))
         coeffs_args = [chr(97 + i) for i in range(len(coeffs_vals) + 1)]
@@ -1054,14 +1066,14 @@ class MotionAxis:
                         for arg, val in zip(coeffs_args, coeffs_vals)}
         model_config = models.get(model_name, None)
         if model_config is None:
-            raise self.config.error(
+            raise config.error(
                 f"motors_sync: Invalid steps model '{model_name}'")
         if len(model_coeffs) != model_config['ct']:
-            raise self.config.error(
+            raise config.error(
                 f"motors_sync: Steps model '{model_name}' "
                 f"requires {model_config['ct']} coefficients")
         if model_coeffs['a'] == model_config['a']:
-            raise self.config.error(
+            raise config.error(
                 f"motors_sync: Coefficient 'a' cannot be "
                 f"{model_coeffs['a']} for a '{model_name}' model")
         self.model_name = model_name
@@ -1072,7 +1084,7 @@ class MotionAxis:
         def model_solve(fx=None):
             if fx is None:
                 fx = self.new_magnitude
-            res = model_config['f'](fx, self.model_coeffs)
+            res = model_config['f'](fx, tuple(model_coeffs.values()))
             if np.isnan(res):
                 raise Exception(
                     f"Microsteps calculation returned NaN "
@@ -1080,38 +1092,42 @@ class MotionAxis:
             return res * model_scale
         self.steps_model_solve = model_solve
 
-    def init_accel_chip_helper(self, accel_chip_name):
-        if isinstance(self.chip_helper, BaseSensorHelper):
+    def init_accel_chip_helper(self, accel_chip_name, config=None):
+        filter_params = None
+        if isinstance(self.chip_helper, AccelHelper):
             self.chip_helper.finish_measurements()
+            filter_params = self.chip_helper.get_chip_filter_params()
         if accel_chip_name == 'beacon':
-            self.chip_helper = BeaconAccelHelper(self, accel_chip_name)
+            self.chip_helper = BeaconAccelHelper(self,
+                accel_chip_name, config=config, cfp=filter_params)
         else:
-            self.chip_helper = AccelHelper(self, accel_chip_name)
+            self.chip_helper = AccelHelper(self,
+                accel_chip_name, config=config, cfp=filter_params)
 
-    def _init_chip_helper(self):
-        accel_chip_name = self.config.get(f'accel_chip_{self.name}', '')
-        enc_chip_name = self.config.get(f'encoder_chip_{self.name}', '')
+    def _init_chip_helper(self, config):
+        accel_chip_name = config.get(f'accel_chip_{self.name}', None)
+        enc_chip_name = config.get(f'encoder_chip_{self.name}', None)
         if accel_chip_name and enc_chip_name:
-            raise self.config.error(f"motors_sync: Only 1 sensor "
-                                    f"type can be selected")
+            raise config.error(f"motors_sync: Only 1 sensor "
+                               f"type can be selected")
         if not accel_chip_name and not enc_chip_name:
-            accel_chip_name = self.config.get('accel_chip', '')
-        if not accel_chip_name and not enc_chip_name:
-            raise self.config.error(
+            accel_chip_name = config.get('accel_chip', None)
+        if not accel_chip_name:
+            raise config.error(
                 f"motors_sync: Sensors type 'accel_chip' or "
                 f"'encoder_chip_<axis>' must be provided")
         if accel_chip_name:
-            self.init_accel_chip_helper(accel_chip_name)
+            self.init_accel_chip_helper(accel_chip_name, config)
             def_steps_model = ['linear', 20000, 0]
         elif enc_chip_name:
             self.chip_helper = EncoderHelper(self, enc_chip_name)
             def_steps_model = ['enc_auto', self.move_d]
         else:
             raise
-        self._init_steps_models(def_steps_model)
+        self._init_steps_models(config, def_steps_model)
 
-    def _init_fan(self, fans):
-        self.fan = self.sync.fan_manager.register_fans(self.name, fans)
+    def _init_fan(self, sync, fans):
+        self.fan = sync.fan_manager.register_fans(self.name, fans)
 
     def flush_motion_data(self):
         self.set_move_dir(0)
@@ -1338,11 +1354,10 @@ class MotionAxis:
 
 class MotorsSync:
     def __init__(self, config):
-        self.config = config
         self.printer = config.get_printer()
         self.gcode = self.printer.lookup_object('gcode')
         self.printer.register_event_handler("klippy:connect", self._handle_connect)
-        self.status = z_tilt.ZAdjustStatus(self.printer)
+        self.status = ZAdjustStatus(self.printer)
         self.connect_tasks = []
         self.stepper_move = StepperManualMove(config)
         self.fan_manager = FanManager(config)
@@ -1424,7 +1439,6 @@ class MotorsSync:
 
 class MotorsSyncCalibrate:
     def __init__(self, sync):
-        self.sync = sync
         self.kin_helper = sync.kin_helper
         self.printer = sync.printer
         self.reactor = self.printer.get_reactor()
