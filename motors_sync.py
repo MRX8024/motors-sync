@@ -339,12 +339,108 @@ class CoreXYKinematics(BaseKinematics):
         return sorted({axis.name for axis in self.motion_axes.values()})
 
 
+class HybridCoreXYKinematics(BaseKinematics):
+    def __init__(self, config, sync, valid_axes=['y','y1','x']):
+        self.valid_axes = valid_axes
+        super().__init__(config, sync)
+
+    @staticmethod
+    def get_hybrid_axes_sync_pos(config, axes):
+        positions = {axes[2]: [None, None, None]}
+        x_st_section = config.getsection('stepper_' + axes[2])
+        x_min_pos = x_st_section.getfloat('position_min', 0)
+        x_max_pos = x_st_section.getfloat('position_max')
+        y_st_section = config.getsection('stepper_' + axes[0])
+        y_min_pos = y_st_section.getfloat('position_min', 0)
+        y_max_pos = y_st_section.getfloat('position_max')
+        y_rd = y_st_section.getfloat('rotation_distance')
+        y_mid_pos = (y_min_pos + y_max_pos) / 2
+        positions.update({axes[0]: [x_min_pos + y_rd + 5, y_mid_pos, None]})
+        positions.update({axes[1]: [x_max_pos - y_rd - 5, y_mid_pos, None]})
+        return positions
+
+    def _handle_homing_move_end(self, homing_state, rails):
+        if 1 in homing_state.get_axes():
+            self.sync.status.reset()
+
+    def _init_axes(self, config):
+        y_axes = self.valid_axes[:2]
+        if config.getlist('axes', default=None) is not None:
+            raise config.error(f"motors_sync: Parameter 'axes' is "
+                               f"not valid for this kinematics")
+        sync_pos = self.get_hybrid_axes_sync_pos(config, self.valid_axes)
+        ph_offs = self.stats_helper.get_axes_phase_offsets(y_axes)
+        self.motion_axes.update(
+            {ax: MotionAxis(self.sync, ax, 'xy', ph_offs.get(ax),
+                'stepper_' + ax, sync_pos[ax], True) for ax in y_axes})
+        y1_conf_section = config.getsection('stepper_' + y_axes[1])
+        if y1_conf_section.get('endstop_pin', None) is not None:
+            self.printer.register_event_handler(
+                "homing:home_rails_end", self._handle_homing_move_end)
+
+    def _init_axes_steppers(self, config):
+        if (hasattr(self.toolhead_kin, "dc_module")
+                and self.toolhead_kin.dc_module is not None):
+            raise config.error(f"motors_sync: Not supported "
+                               f"kinematics with dual_carriage")
+        if len(self.toolhead_kin.rails) > 3:
+            raise config.error(f"motors_sync: Not supported kinematics")
+        toolhead_kin_steppers = self.toolhead_kin.get_steppers()
+        help_axis_name = self.valid_axes[2]
+        buzz_steppers = [s for s in toolhead_kin_steppers
+                         if 'stepper_' + help_axis_name in s.get_name()]
+        if len(buzz_steppers) not in (2,):
+            raise config.error(
+                f"motors_sync: Not supported '{len(buzz_steppers)}' "
+                f"count of motors for '{help_axis_name}' axis")
+        buzz_stepper = buzz_steppers[0]
+        axes_alloc_steppers = []
+        for axis in self.motion_axes.values():
+            main_stepper = [s for s in toolhead_kin_steppers
+                            if 'stepper_' + axis.name == s.get_name()]
+            if len(main_stepper) not in (1,):
+                raise config.error(
+                    f"motors_sync: Not supported '{len(main_stepper)}' "
+                    f"count of motors for '{axis.name}' axis")
+            main_stepper = main_stepper[0]
+            st_section = config.getsection(main_stepper.get_name())
+            st_msteps = st_section.getint('microsteps')
+            if axis.microsteps > st_msteps:
+                raise config.error(
+                    f'motors_sync: Invalid config microsteps '
+                    f'count, cannot be more than in stepper '
+                    f'config, {axis.microsteps} > {st_msteps}')
+            axes_alloc_steppers.append([axis, main_stepper])
+        y0, y1 = axes_alloc_steppers
+        y0[0].add_steppers(y0[1], y0[1], buzz_stepper, [y1[1]])
+        y1[0].add_steppers(y1[1], y1[1], buzz_stepper, [y0[1]])
+
+    def axes_sync(self, axes):
+        axes = axes[::-1]
+        # To skip extra measure_deviation() in axis_sync_step()
+        axes[0].detect_move_dir()
+        for m in axes:
+            while True:
+                if m.is_finished:
+                    if all(m.is_finished for m in axes):
+                        return
+                    break
+                self.axis_sync_step(m)
+
+    def calibrate_axis_steps_model(self, axis, peak_mstep, repeats):
+        return self.axis_calibrate_cycle(axis, peak_mstep, repeats)
+
+    def get_linked_calibration_axes(self, axis):
+        return sorted({axis.name for axis in self.motion_axes.values()})
+
+
 class KinematicsParser:
     @staticmethod
     def get_kinematics(config, sync):
         kin_map = {cls.__name__.replace('Kinematics', '').lower(): cls
                    for cls in BaseKinematics.__subclasses__()}
         kin_map.update({'limitedcorexy': CoreXYKinematics})
+        kin_map.update({'ratoshybridcorexy': HybridCoreXYKinematics})
         printer_section = config.getsection('printer')
         conf_kin = printer_section.get('kinematics')
         kin_helper = kin_map.get("".join(conf_kin.split("_")))
