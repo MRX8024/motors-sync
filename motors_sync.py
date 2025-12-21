@@ -162,7 +162,7 @@ class BaseKinematics:
         m.toggle_main_stepper(0)
         for r in range(1, repeats + 1):
             self.gcode.respond_info(f'Repeats: {r}/{repeats}')
-            m.manual_move(next(looped_pos))
+            m.manual_move([next(looped_pos)])
             for inv in invs:
                 m.set_move_dir(inv)
                 for _ in range(peak_mstep):
@@ -173,7 +173,7 @@ class BaseKinematics:
                         max_steps += 1
                     samples.append(m.new_magnitude)
         if repeats % 2 == 1:
-            m.manual_move(next(looped_pos))
+            m.manual_move([next(looped_pos)])
         m.magnitude = m.new_magnitude
         m.on_done()
         return max_steps, samples[1:]
@@ -389,14 +389,15 @@ class StepperManualMove:
         self.trapq = self.motion_queuing.allocate_trapq()
         self.trapq_append = self.motion_queuing.lookup_trapq_append()
         ffi_main, ffi_lib = chelper.get_ffi()
-        self.stepper_kin = ffi_main.gc(
-            ffi_lib.cartesian_stepper_alloc(b'x'), ffi_lib.free)
+        cart = ffi_lib.cartesian_stepper_alloc
+        self.stepper_kins = [ffi_main.gc(cart(b'x'), ffi_lib.free)
+                             for _ in range(2)]
         printer.register_event_handler("klippy:connect",
                                        self._handle_connect)
 
     def _handle_connect(self):
         self.toolhead = self.printer.lookup_object('toolhead')
-        self.travel_speed = min(self.toolhead.max_velocity, 100)
+        self.travel_speed = min(self.toolhead.max_velocity, 150)
         self.travel_accel = min(self.toolhead.max_accel, 5000)
 
     def steppers_enable(self, mcu_steppers, mode):
@@ -413,11 +414,14 @@ class StepperManualMove:
             did_change = True
         return did_change
 
-    def manual_move(self, mcu_stepper, moves):
+    def manual_move(self, mcu_steppers, moves):
         self.toolhead.flush_step_generation()
-        prev_sk = mcu_stepper.set_stepper_kinematics(self.stepper_kin)
-        prev_trapq = mcu_stepper.set_trapq(self.trapq)
-        mcu_stepper.set_position((0., 0., 0.))
+        _mcu_steppers_params = {}
+        for i, mcu_st in enumerate(mcu_steppers):
+            p = _mcu_steppers_params[mcu_st] = {}
+            p['sk'] = mcu_st.set_stepper_kinematics(self.stepper_kins[i])
+            p['tq'] = mcu_st.set_trapq(self.trapq)
+            mcu_st.set_position((0., 0., 0.))
         ptime = start_ptime = self.toolhead.get_last_move_time()
         last_pos = 0.0
         for move in moves:
@@ -430,13 +434,16 @@ class StepperManualMove:
                 0., 0., axis_r, 0., 0., 0., cruise_v, self.travel_accel)
             ptime = ptime + accel_t + cruise_t + accel_t
             last_pos += move
-        if hasattr(mcu_stepper, 'generate_steps'):
-            mcu_stepper.generate_steps(ptime)
+        if hasattr(mcu_st, 'generate_steps'):
+            for mcu_stepper in mcu_steppers:
+                mcu_stepper.generate_steps(ptime)
         self.motion_queuing.note_mcu_movequeue_activity(ptime)
         self.toolhead.dwell(ptime - start_ptime)
         self.toolhead.flush_step_generation()
-        mcu_stepper.set_trapq(prev_trapq)
-        mcu_stepper.set_stepper_kinematics(prev_sk)
+        for mcu_stepper in mcu_steppers:
+            p = _mcu_steppers_params[mcu_stepper]
+            mcu_stepper.set_trapq(p['tq'])
+            mcu_stepper.set_stepper_kinematics(p['sk'])
         self.motion_queuing.wipe_trapq(self.trapq)
 
 
@@ -540,6 +547,89 @@ class BaseSensorHelper:
 
     def detect_move_dir(self):
         raise
+
+
+class StallGuardBatchHelper(BaseSensorHelper):
+    def __init__(self, axis, chip_name):
+        super().__init__(axis, chip_name)
+
+    def _init_chip_config(self):
+        tmc = self.printer.lookup_object(self.chip_name)
+        self.chip_config = tmc.get_status.__self__.record_helper
+
+    def calc_deviation(self):
+        # Calculate
+        sg_samples = self._get_samples()[:, 0]
+        middle = sg_samples.shape[0] // 2
+        first_dev = np.median(sg_samples[:middle])
+        sec_dev = np.median(sg_samples[middle:])
+        return first_dev, sec_dev
+
+
+class StallGuardHelper:
+    def __init__(self, axis, chip_names):
+        self.chip_helpers = [
+            StallGuardBatchHelper(axis, ch) for ch in chip_names]
+        main_helper = self.chip_helpers[0]
+        self.chip_name = main_helper.chip_name
+        self.axis = main_helper.axis
+        self.msg_helper = main_helper.msg_helper
+        self.dim_type = 'sgresult'
+
+    def flush_data(self):
+        for ch in self.chip_helpers:
+            ch.flush_data()
+
+    def update_start_time(self):
+        for ch in self.chip_helpers:
+            ch.update_start_time()
+
+    def update_end_time(self):
+        for ch in self.chip_helpers:
+            ch.update_end_time()
+
+    def start_measurements(self):
+        for ch in self.chip_helpers:
+            ch.start_measurements()
+
+    def finish_measurements(self):
+        for ch in self.chip_helpers:
+            ch.finish_measurements()
+
+    def calc_deviation(self):
+        dev0 = self.chip_helpers[0].calc_deviation()
+        dev1 = self.chip_helpers[1].calc_deviation()
+        delta0 = abs(dev0[0] - dev1[0])
+        delta1 = abs(dev0[1] - dev1[1])
+        # return (abs(d0[0] - d1[0]) + abs(d0[1] - d1[1])) / 2
+        self.axis.gcode.respond_info(f"delta0={delta0} delta1={delta1}")
+        return (delta0 + delta1) / 2
+
+    def measure_deviation(self):
+        # Measure the
+        mcu_steppers = self.axis.get_steppers()['mcu_steppers']
+        self.axis.toggle_steppers(1)
+        self.flush_data()
+        self.update_start_time()
+        self.axis.manual_move([50, -50], mcu_steppers)
+        self.update_end_time()
+        self.axis.toggle_main_stepper(0, (PIN_MIN_TIME,)*2)
+        dev = self.calc_deviation()
+        self.axis.update_log(dev)
+        return dev
+
+    def detect_move_dir(self):
+        # Determine axis movement direction
+        self.axis.set_move_dir(0)
+        self.axis.step_move()
+        self.axis.new_magnitude = self.measure_deviation()
+        self.msg_helper.stepped_msg(self.axis)
+        if self.axis.new_magnitude > self.axis.magnitude:
+            self.axis.set_move_dir(-1)
+        else:
+            self.axis.set_move_dir(1)
+        self.msg_helper.direction_msg(self.axis)
+        self.axis.magnitude = self.axis.new_magnitude
 
 
 class AccelHelper(BaseSensorHelper):
@@ -988,12 +1078,11 @@ class MotionAxis:
         if not self.axes_steps_diff:
             self.axes_steps_diff = self.config.getint(
                 'axes_steps_diff', self.max_step_size + 1, minval=1)
-        rmin = self.move_d * 1e3
         self.retry_tolerance = self.config.getfloat(
-            f'retry_tolerance_{name}', default=0, above=rmin)
+            f'retry_tolerance_{name}', default=0, above=0.)
         if not self.retry_tolerance:
             self.retry_tolerance = self.config.getfloat(
-                'retry_tolerance', default=0, above=rmin)
+                'retry_tolerance', default=0, above=0.)
         self.max_retries = self.config.getint(
             f'retries_{name}', default=0, minval=0, maxval=10)
         if not self.max_retries:
@@ -1045,13 +1134,15 @@ class MotionAxis:
             raise self.printer.config_error(
                 "Cannot put all tasks on one stepper")
         steppers = list(steppers_set)
-        tmcs = self._init_tmc_drivers(steppers)
+        t_names, t_modules = self._init_tmc_drivers(steppers)
         self.steppers = {
             'mcu_steppers': steppers,
-            'tmcs': tmcs,
+            'tmcs': t_modules,
             'enable_stepper': enable,
             'step_stepper': step,
             'buzz_stepper': buzz}
+        if self.chip_helper == 'STALLGUARD':
+            self.chip_helper = StallGuardHelper(self, t_names)
 
     def swap_steppers(self, en_stepper_name):
         logging.info("motors_sync: swap_steppers requested")
@@ -1105,7 +1196,7 @@ class MotionAxis:
             return
         self.toggle_main_stepper(0, (PIN_MIN_TIME, PIN_MIN_TIME))
         mcu_stepper = self.steppers['step_stepper']
-        self.stepper_move.manual_move(mcu_stepper, [move_d])
+        self.stepper_move.manual_move([mcu_stepper], [move_d])
         msteps = int(move_d // self.move_d)
         self.gcode.respond_info(
             f'{self.name_prefixed}-Restore previous '
@@ -1161,10 +1252,11 @@ class MotionAxis:
         if did_change:
             self.toolhead.dwell(MOTOR_STALL_TIME)
 
-    def manual_move(self, dist):
+    def manual_move(self, moves, mcu_steppers=None):
         self.toggle_paired_axes_steppers(0)
-        mcu_stepper = self.steppers['buzz_stepper']
-        self.stepper_move.manual_move(mcu_stepper, [dist])
+        if mcu_steppers is None:
+            mcu_steppers = [self.steppers['buzz_stepper']]
+        self.stepper_move.manual_move(mcu_steppers, moves)
 
     def step_move(self, dir=1):
         mcu_stepper = self.steppers['step_stepper']
@@ -1172,7 +1264,7 @@ class MotionAxis:
         dist = self.move_d * move_msteps
         self.actual_msteps += move_msteps
         self.drift_msteps += move_msteps
-        self.stepper_move.manual_move(mcu_stepper, [dist])
+        self.stepper_move.manual_move([mcu_stepper], [dist])
 
     def _gen_buzz_moves(self, rel_moves):
         moves = []
@@ -1193,7 +1285,7 @@ class MotionAxis:
         moves = self.buzz_moves.get(
             rel_moves, self._gen_buzz_moves(rel_moves))
         self.toggle_main_stepper(0, (PIN_MIN_TIME,)*2)
-        self.stepper_move.manual_move(mcu_stepper, moves)
+        self.stepper_move.manual_move([mcu_stepper], moves)
 
     def measure_deviation(self):
         self.move_on_measure_pos()
@@ -1230,8 +1322,34 @@ class MotionAxis:
         self.chip_helper.finish_measurements()
 
     def on_done(self):
+        self.chip_helper1.start_measurements()
         if not self.is_finished:
             self.on_finish()
+
+        self.chip_helper1.flush_data()
+        self.toolhead.wait_moves()
+        self.toggle_main_stepper(1, (PIN_MIN_TIME,))
+        self.toggle_main_stepper(0, (PIN_MIN_TIME,))
+        self.chip_helper1.update_start_time()
+        self.toggle_main_stepper(1)
+        self.chip_helper1.update_end_time()
+        self.toggle_main_stepper(0)
+        dev = self.chip_helper1.calc_deviation()
+        self.gcode.respond_info(f"{self.name_prefixed} dev={dev}")
+
+        self.chip_helper1.flush_data()
+        self.toolhead.wait_moves()
+        self.toggle_main_stepper(1, (PIN_MIN_TIME,))
+        self.toggle_main_stepper(0, (PIN_MIN_TIME,))
+        self.chip_helper1.update_start_time()
+        self.toggle_main_stepper(1)
+        self.chip_helper1.update_end_time()
+        self.toggle_main_stepper(0)
+        dev = self.chip_helper1.calc_deviation()
+        self.gcode.respond_info(f"{self.name_prefixed} dev={dev}")
+        self.toolhead.wait_moves()
+        self.chip_helper1.finish_measurements()
+
         self.toggle_steppers(1)
         self.toggle_paired_axes_steppers(1)
         self.update_phase_offset()
@@ -1245,13 +1363,14 @@ class MotionAxis:
         self.stats_helper.write_axis_stats_log(self, False)
 
     def _init_tmc_drivers(self, steppers):
-        tmcs = []
+        tmcs = [[], []]
         for stepper in steppers:
             for driver in TRINAMIC_DRIVERS:
                 driver_name = f"{driver} {stepper.get_name()}"
                 module = self.printer.lookup_object(driver_name, None)
                 if module is not None:
-                    tmcs.append(module)
+                    tmcs[0].append(driver_name)
+                    tmcs[1].append(module)
                     break
             else:
                 raise self.printer.config_error(
@@ -1314,26 +1433,40 @@ class MotionAxis:
         else:
             self.chip_helper = AccelHelper(self, accel_chip_name)
 
+    # def _init_chip_helper(self):
+    #     accel_chip_name = self.config.get(f'accel_chip_{self.name}', '')
+    #     enc_chip_name = self.config.get(f'encoder_chip_{self.name}', '')
+    #     stallguard = False
+    #     if accel_chip_name and enc_chip_name:
+    #         raise self.config.error(f"motors_sync: Only 1 sensor "
+    #                                 f"type can be selected")
+    #     if not accel_chip_name and not enc_chip_name:
+    #         accel_chip_name = self.config.get('accel_chip', '')
+    #     if not accel_chip_name and not enc_chip_name:
+    #         stallguard = True
+    #         # raise self.config.error(
+    #         #     f"motors_sync: Sensors type 'accel_chip' or "
+    #         #     f"'encoder_chip_<axis>' must be provided")
+    #     if accel_chip_name:
+    #         self.init_accel_chip_helper(accel_chip_name)
+    #         def_steps_model = ['linear', 20000, 0]
+    #     elif enc_chip_name:
+    #         self.chip_helper = EncoderHelper(self, enc_chip_name)
+    #         def_steps_model = ['enc_auto', self.move_d]
+    #     elif stallguard:
+    #         # Init after steppers init
+    #         self.chip_helper = 'STALLGUARD'
+    #         def_steps_model = ['linear', 5, 0]
+    #     else:
+    #         raise
+    #     self._init_steps_models(def_steps_model)
+
     def _init_chip_helper(self):
-        accel_chip_name = self.config.get(f'accel_chip_{self.name}', '')
         enc_chip_name = self.config.get(f'encoder_chip_{self.name}', '')
-        if accel_chip_name and enc_chip_name:
-            raise self.config.error(f"motors_sync: Only 1 sensor "
-                                    f"type can be selected")
-        if not accel_chip_name and not enc_chip_name:
-            accel_chip_name = self.config.get('accel_chip', '')
-        if not accel_chip_name and not enc_chip_name:
-            raise self.config.error(
-                f"motors_sync: Sensors type 'accel_chip' or "
-                f"'encoder_chip_<axis>' must be provided")
-        if accel_chip_name:
-            self.init_accel_chip_helper(accel_chip_name)
-            def_steps_model = ['linear', 20000, 0]
-        elif enc_chip_name:
-            self.chip_helper = EncoderHelper(self, enc_chip_name)
-            def_steps_model = ['enc_auto', self.move_d]
-        else:
-            raise
+        self.chip_helper1 = EncoderHelper(self, enc_chip_name)
+        # Init after steppers init
+        self.chip_helper = 'STALLGUARD'
+        def_steps_model = ['linear', 5, 0]
         self._init_steps_models(def_steps_model)
 
     def _init_fan(self, fans):
@@ -1385,12 +1518,11 @@ class MotorsSync:
         # Check axes sensors, retry tolerance, retries count change
         chip = gcmd.get(f'ACCEL_CHIP', None)
         for axis in axes:
-            if not isinstance(axis.chip_helper, AccelHelper):
-                continue
             axis_name = axis.name.upper()
-            ax_chip = gcmd.get(f'ACCEL_CHIP_{axis_name}', chip)
-            if ax_chip and ax_chip != axis.chip_helper.chip_name:
-                axis.init_accel_chip_helper(ax_chip)
+            if isinstance(axis.chip_helper, AccelHelper):
+                ax_chip = gcmd.get(f'ACCEL_CHIP_{axis_name}', chip)
+                if ax_chip and ax_chip != axis.chip_helper.chip_name:
+                    axis.init_accel_chip_helper(ax_chip)
             retry_tol = gcmd.get_int(f'RETRY_TOLERANCE_{axis_name}', 0)
             if not retry_tol:
                 retry_tol = gcmd.get_int(f'RETRY_TOLERANCE', 0)
