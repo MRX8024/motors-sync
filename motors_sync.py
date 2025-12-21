@@ -127,7 +127,8 @@ class BaseKinematics:
         # Init axes magnitudes
         for ax in axes:
             ax.on_start()
-            ax.init_magnitude = ax.magnitude = ax.measure_deviation()
+            ax.init_magnitude = ax.new_magnitude = \
+                ax.magnitude = ax.measure_deviation()
             self.msg_helper.start_msg(ax)
         # Check if all axes in tolerance
         if not force_run and self.is_axes_in_tolerance(axes):
@@ -718,6 +719,7 @@ class AccelHelper(BaseSensorHelper):
     def detect_move_dir(self):
         # Determine axis movement direction
         self.axis.set_move_dir(0)
+        self.axis.calc_move_msteps()
         self.axis.step_move()
         self.axis.new_magnitude = self.measure_deviation()
         self.msg_helper.stepped_msg(self.axis)
@@ -823,7 +825,6 @@ class EncoderHelper(BaseSensorHelper):
         else:
             self.axis.set_move_dir(1)
         self.msg_helper.direction_msg(self.axis)
-        self.axis.new_magnitude = self.axis.magnitude
 
 
 class FanController:
