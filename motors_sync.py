@@ -558,6 +558,8 @@ class BaseSensorHelper:
         self.gcode = self.printer.lookup_object('gcode')
         self.reactor = self.printer.get_reactor()
         self.chip_config = None
+        self.collect_samples = False
+        self.collected_samples = []
         self.is_finished = False
         self.samples = []
         self.request_start_time = None
@@ -618,6 +620,15 @@ class BaseSensorHelper:
                     raise Exception(
                         'motors_sync: No data from sensor')
 
+    def save_samples(self, prefix='debug_data'):
+        now = datetime.now().strftime('%Y%m%d_%H%M%S')
+        name = f"{prefix}_{self.axis.name}_{now}.npy"
+        path = os.path.expanduser(PLOT_PATH)
+        os.makedirs(path, exist_ok=True)
+        arr = np.array(self.collected_samples, dtype=object)
+        np.save(os.path.join(path, name), arr)
+        self.collected_samples.clear()
+
     def _get_samples(self):
         self._wait_samples()
         raw_data = np.array(self.samples)
@@ -625,6 +636,9 @@ class BaseSensorHelper:
                     self.request_start_time, side='left')
         end_idx = np.searchsorted(raw_data[:, 0],
                     self.request_end_time, side='right')
+        if self.collect_samples:
+            self.collected_samples.append(
+                [self.axis.actual_msteps, raw_data[start_idx:end_idx]])
         return raw_data[start_idx:end_idx][:, 1:]
 
     def measure_deviation(self):
@@ -1450,6 +1464,9 @@ class MotorsSync:
         self.gcode.register_command('SYNC_MOTORS_CALIBRATE',
                                     self.cmd_SYNC_MOTORS_CALIBRATE,
                                     desc=self.cmd_SYNC_MOTORS_CALIBRATE_help)
+        self.gcode.register_command('SYNC_MOTORS_DEVIATION_RANGE',
+                                self.cmd_SYNC_MOTORS_DEVIATION_RANGE,
+                                desc=self.cmd_SYNC_MOTORS_DEVIATION_RANGE_help)
         # Variables
         self.reactor = self.printer.get_reactor()
 
@@ -1507,6 +1524,15 @@ class MotorsSync:
         if not hasattr(self, 'sync_calibrate_helper'):
             self.sync_calibrate_helper = MotorsSyncCalibrate(self)
         self.sync_calibrate_helper.run_calibrate(gcmd)
+        self.status.reset()
+
+    cmd_SYNC_MOTORS_DEVIATION_RANGE_help = \
+        'Analyze axis deviation range and asymmetry'
+    def cmd_SYNC_MOTORS_DEVIATION_RANGE(self, gcmd):
+        # Find axis deviation range and asymmetry
+        if not hasattr(self, 'debug_helper'):
+            self.debug_helper = MotionAxisDebugHelper(self)
+        self.debug_helper.analyze_axis_deviation_range(gcmd)
         self.status.reset()
 
     def get_status(self, eventtime):
@@ -1710,6 +1736,184 @@ class MotorsSyncCalibrate:
             self.gcode.respond_info(str(res[0]))
         # Save best fit function in config
         self.save_config(axis, res[1][-1][0])
+
+
+class MotionAxisDebugHelper:
+    def __init__(self, sync):
+        self.sync = sync
+        self.kin_helper = sync.kin_helper
+        self.msg_helper = sync.msg_helper
+        self.printer = sync.printer
+        self.reactor = self.printer.get_reactor()
+        self.gcode = self.printer.lookup_object('gcode')
+        try:
+            self._load_modules()
+        except ImportError as e:
+            raise self.gcode.error(f'motors_sync: Could not import: {e}')
+        self.path = os.path.expanduser(PLOT_PATH)
+        self.check_export_path()
+
+    @staticmethod
+    def _load_modules():
+        globals().update({
+            'wrap': __import__('textwrap', fromlist=['wrap']).wrap,
+            'multiprocessing': __import__('multiprocessing'),
+            'plt': __import__('matplotlib.pyplot', fromlist=['']),
+            'ticker': __import__('matplotlib.ticker', fromlist=['']),
+        })
+
+    def check_export_path(self):
+        if os.path.exists(self.path):
+            return
+        try:
+            os.makedirs(self.path)
+        except OSError as e:
+            raise self.gcode.error(
+                f'Error generate path {self.path}: {e}')
+
+    def deviation_range_plott(self, samples, axis, accel_chip,
+                              peak_mstep, fullstep, points=False):
+        forwd, backwd = samples
+        fig, axs = plt.subplots(2, 2, figsize=(14, 10))
+        axs = axs.flatten()
+        def draw(ax, x, y, label):
+            if points:
+                ax.scatter(x, y, label=label, zorder=2, s=10)
+            else:
+                ax.plot(x, y, label=label)
+        # First graph
+        draw(axs[0], forwd[0], forwd[1], 'Forward negative/positive')
+        axs[0].set_title('Forward dataset')
+        # Second graph
+        draw(axs[1], backwd[0], backwd[1], 'Backward positive/negative')
+        axs[1].invert_xaxis()
+        axs[1].set_title('Backward dataset')
+        # Third graph
+        draw(axs[2], forwd[0], forwd[1], 'Forward negative/positive')
+        draw(axs[2], backwd[0], backwd[1], 'Backward negative/positive')
+        axs[2].set_title('Forward/Backward datasets')
+        # Fourth graph
+        half = len(forwd[0]) // 2 + 1
+        x_half = forwd[0][:half]
+        y1 = forwd[1][:half]
+        y2 = forwd[1][-half:][::-1]
+        y3 = backwd[1][:half]
+        y4 = backwd[1][-half:][::-1]
+        draw(axs[3], x_half, y1, label='Forward negative')
+        draw(axs[3], x_half, y2, label='Forward positive')
+        draw(axs[3], x_half, y3, label='Backward positive')
+        draw(axs[3], x_half, y4, label='Backward negative')
+        axs[3].set_title('Mirrored/Splitted Forward/Backward '
+                         'datasets (abs moves)')
+        for ax in axs[:-1]:
+            ax.set_xticks(np.arange(min(forwd[0]), max(forwd[0])+1, 4))
+        # General graphs params
+        pow_lim = (-2, 2)
+        for ax in axs:
+            ax.set_xlabel('Moves (microsteps)')
+            ax.xaxis.set_minor_locator(ticker.MultipleLocator(1))
+            ax.ticklabel_format(axis='x', style='plain',
+                                scilimits=pow_lim)
+            ax.set_ylabel('Deviation (magnitude)')
+            ax.yaxis.set_minor_locator(ticker.AutoMinorLocator())
+            ax.ticklabel_format(axis='y', style='scientific',
+                                scilimits=pow_lim)
+            ax.grid(which='major', color='grey')
+            ax.grid(which='minor', color='lightgrey')
+            ax.legend(fontsize=9)
+        accel_chip = accel_chip.replace(' ', '-')
+        now = datetime.now().strftime('%Y%m%d_%H%M%S')
+        lognames = (f'deviation_range_plot_{axis}_{peak_mstep}-'
+                    f'{fullstep}_{accel_chip}_{now}.png')
+        title = f"Axis deviation range and asymmetry ({''.join(lognames)})"
+        fig.suptitle("\n".join(wrap(title, 66)), fontsize=12)
+        plt.tight_layout()
+        png_path = os.path.join(self.path, lognames)
+        plt.savefig(png_path, dpi=1000)
+        return f'Access to interactive plot at: {png_path}'
+
+    def analyze_axis_deviation_range(self, gcmd):
+        axis_name = gcmd.get('AXIS').lower()
+        m = self.kin_helper.motion_axes.get(axis_name)
+        if m is None:
+            raise self.gcode.error(f'Invalid axis: {axis_name.upper()}')
+        peak_mstep = gcmd.get_int('DISTANCE', 16, minval=2, maxval=16 * 2)
+        self.gcode.respond_info(
+            f'Analyze deviation range and asymmetry started on '
+            f'{m.name_prefixed} axis, move to +-{peak_mstep}/16 microstep')
+        self.gcode.respond_info('Synchronizing before calibration...')
+        self.kin_helper.start_sync(force_run=True)
+        m.chip_helper.collect_samples = True
+        m.on_start()
+        m.move_on_measure_pos()
+        m.toggle_main_stepper(0)
+        fullstep_dist = m.move_d * m.microsteps
+        steps_scale = int(m.microsteps // 16)
+        steps_count = int((fullstep_dist * (peak_mstep / 16))
+                          / m.move_d / steps_scale) * 2
+        start_step = int(steps_count / 2 * steps_scale)
+        m.move_msteps = start_step
+        m.set_move_dir(-1)
+        m.step_move()
+        m.move_msteps = 1 * steps_scale
+        samples = []
+        invs = [1, -1]
+        for inv in invs:
+            m.set_move_dir(inv)
+            self.msg_helper.direction_msg(m)
+            _samples = [[], []]
+            m.new_magnitude = m.measure_deviation()
+            self.msg_helper.static_msg(m)
+            _samples[0].append(m.actual_msteps)
+            _samples[1].append(m.new_magnitude)
+            for _ in range(steps_count):
+                m.step_move()
+                m.new_magnitude = m.measure_deviation()
+                self.msg_helper.stepped_msg(m)
+                _samples[0].append(m.actual_msteps)
+                _samples[1].append(m.new_magnitude)
+            samples.append(_samples)
+        m.move_msteps = start_step
+        m.set_move_dir(1)
+        m.step_move()
+        m.flush_motion_data()
+        m.on_done()
+        m.chip_helper.collect_samples = False
+        m.chip_helper.save_samples()
+        logging.info(f"motors_sync_axis_dev_range: {samples}")
+        def samples_processing():
+            try:
+                os.nice(10)
+            except:
+                pass
+            try:
+                msg = self.deviation_range_plott(samples, m.name,
+                    m.chip_helper.chip_name, peak_mstep, 16)
+                c_conn.send((False, (msg,)))
+                c_conn.close()
+            except Exception as e:
+                c_conn.send((True, (e,)))
+                c_conn.close()
+        # Run plotter
+        p_conn, c_conn = multiprocessing.Pipe()
+        proc = multiprocessing.Process(target=samples_processing)
+        proc.daemon = True
+        proc.start()
+        lim_t = 60.
+        now = start_t = last_report_time = self.reactor.monotonic()
+        while proc.is_alive():
+            if now > last_report_time + 10.:
+                last_report_time = now
+                self.gcode.respond_info('Data processing...', True)
+                if now > start_t + lim_t:
+                    raise self.gcode.error(f'Data processing stuck!')
+            now = self.reactor.pause(now + .1)
+        err, res = p_conn.recv()
+        if err:
+            raise self.gcode.error(f'Data processing finished '
+                                   f'with error: {res[0]}')
+        if res[0]:
+            self.gcode.respond_info(str(res[0]))
 
 
 class KalmanLiteFilter:
