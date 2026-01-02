@@ -162,7 +162,7 @@ class BaseKinematics:
         m.move_on_measure_pos()
         # Scale calibration steps to 1/16
         m.move_msteps = m.microsteps // 16
-        m.toggle_main_stepper(0)
+        m.toggle_conflict_steppers(0)
         for r in range(1, repeats + 1):
             self.gcode.respond_info(f'Repeats: {r}/{repeats}')
             m.manual_move(next(looped_pos))
@@ -229,7 +229,7 @@ class CartesianKinematics(BaseKinematics):
                         f'motors_sync: Invalid config microsteps '
                         f'count, cannot be more than in stepper '
                         f'config, {axis.microsteps} > {st_msteps}')
-            axis.add_steppers(*belt_steppers, belt_steppers[1], None)
+            axis.add_steppers(*belt_steppers, belt_steppers[1], [])
 
     def axes_sync(self, axes):
         # To skip extra measure_deviation() in axis_sync_step()
@@ -1166,9 +1166,14 @@ class MotionAxis:
 
     def add_steppers(self, enable, step, buzz, conflict):
         steppers_set = {enable, step, buzz}
-        if len(steppers_set) == 1:
+        if len(steppers_set) == 1 and not self.is_multi_axis:
             raise self.printer.config_error(
                 "Cannot put all tasks on one stepper")
+        if len(steppers_set) > 2:
+            raise self.printer.config_error(
+                "Cannot be more than two main steppers")
+        if len(steppers_set) != 1:
+            conflict.append(enable)
         self_steppers = list(steppers_set)
         self_tmcs = self._init_tmc_drivers(self_steppers)
         self.steppers = {
@@ -1196,6 +1201,8 @@ class MotionAxis:
             sts['step_stepper'] = old_en_stepper
         if sts['buzz_stepper'] == new_en_stepper:
             sts['buzz_stepper'] = old_en_stepper
+        if sts['conflict_steppers'][-1] == old_en_stepper:
+            sts['conflict_steppers'][-1] = new_en_stepper
 
     def get_steppers(self):
         return self.steppers
@@ -1231,14 +1238,14 @@ class MotionAxis:
         move_d = self.phase_offset / 256 * self.move_d * self.microsteps
         if abs(move_d) < self.move_d * 2:
             return
-        self.toggle_main_stepper(0, (PIN_MIN_TIME, PIN_MIN_TIME))
+        self.toggle_conflict_steppers(0, PIN_MIN_TIME)
         mcu_stepper = self.steppers['step_stepper']
         self.stepper_move.manual_move([mcu_stepper], [move_d])
         msteps = int(move_d // self.move_d)
         self.gcode.respond_info(
             f'{self.name_prefixed}-Restore previous '
             f'position: {msteps}/{self.microsteps} step')
-        self.toggle_main_stepper(1, (PIN_MIN_TIME, PIN_MIN_TIME))
+        self.toggle_conflict_steppers(1, PIN_MIN_TIME)
 
     def move_on_measure_pos(self):
         curr_pos = self.toolhead.get_position()
@@ -1271,13 +1278,13 @@ class MotionAxis:
         if ret:
             self.toolhead.dwell(MOTOR_STALL_TIME)
 
-    def toggle_conflict_steppers(self, mode):
+    def toggle_conflict_steppers(self, mode, time=MOTOR_STALL_TIME):
         mcu_steppers = self.steppers['conflict_steppers']
-        if mcu_steppers is None:
+        if len(mcu_steppers) == 0:
             return
         ret = self.stepper_move.steppers_enable(mcu_steppers, mode)
         if ret:
-            self.toolhead.dwell(MOTOR_STALL_TIME)
+            self.toolhead.dwell(time)
 
     def manual_move(self, dist):
         self.toggle_conflict_steppers(0)
@@ -1310,7 +1317,7 @@ class MotionAxis:
         mcu_stepper = self.steppers['buzz_stepper']
         moves = self.buzz_moves.get(
             rel_moves, self._gen_buzz_moves(rel_moves))
-        self.toggle_main_stepper(0, (PIN_MIN_TIME,)*2)
+        self.toggle_conflict_steppers(0, PIN_MIN_TIME)
         self.stepper_move.manual_move([mcu_stepper], moves)
 
     def measure_deviation(self):
@@ -1860,7 +1867,7 @@ class MotionAxisDebugHelper:
         m.chip_helper.collect_samples = True
         m.on_start()
         m.move_on_measure_pos()
-        m.toggle_main_stepper(0)
+        m.toggle_conflict_steppers(0)
         fullstep_dist = m.move_d * m.microsteps
         steps_scale = int(m.microsteps // 16)
         steps_count = int((fullstep_dist * (peak_mstep / 16))
