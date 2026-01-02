@@ -379,12 +379,8 @@ class HybridCoreXYKinematics(BaseKinematics):
             self.printer.register_event_handler(
                 "homing:home_rails_end", self._handle_homing_move_end)
 
-    def _init_axes_steppers(self, config):
-        if (hasattr(self.toolhead_kin, "dc_module")
-                and self.toolhead_kin.dc_module is not None):
-            raise config.error(f"motors_sync: Not supported "
-                               f"kinematics with dual_carriage")
-        if len(self.toolhead_kin.rails) > 3:
+    def _init_hybrid_axes_steppers(self, config):
+        if len(self.toolhead_kin.rails) not in (3,):
             raise config.error(f"motors_sync: Not supported kinematics")
         toolhead_kin_steppers = self.toolhead_kin.get_steppers()
         help_axis_name = self.valid_axes[2]
@@ -415,6 +411,38 @@ class HybridCoreXYKinematics(BaseKinematics):
         y0, y1 = axes_alloc_steppers
         y0[0].add_steppers(y0[1], y0[1], [buzz_stepper], [y1[1]])
         y1[0].add_steppers(y1[1], y1[1], [buzz_stepper], [y0[1]])
+
+    def _init_idex_axes_steppers(self, config):
+        if len(self.toolhead_kin.rails) not in (4,):
+            raise config.error(f"motors_sync: Not supported kinematics")
+        toolhead_kin_steppers = self.toolhead_kin.get_steppers()
+        axes_alloc_steppers = []
+        for axis in self.motion_axes.values():
+            main_stepper = [s for s in toolhead_kin_steppers
+                            if 'stepper_' + axis.name == s.get_name()]
+            if len(main_stepper) not in (1,):
+                raise config.error(
+                    f"motors_sync: Not supported '{len(main_stepper)}' "
+                    f"count of motors for '{axis.name}' axis")
+            main_stepper = main_stepper[0]
+            st_section = config.getsection(main_stepper.get_name())
+            st_msteps = st_section.getint('microsteps')
+            if axis.microsteps > st_msteps:
+                raise config.error(
+                    f'motors_sync: Invalid config microsteps '
+                    f'count, cannot be more than in stepper '
+                    f'config, {axis.microsteps} > {st_msteps}')
+            axes_alloc_steppers.append([axis, main_stepper])
+        y0, y1 = axes_alloc_steppers
+        y0[0].add_steppers(y0[1], y0[1], [y0[1], y1[1]], [])
+        y1[0].add_steppers(y1[1], y1[1], [y1[1], y0[1]], [])
+
+    def _init_axes_steppers(self, config):
+        if (hasattr(self.toolhead_kin, "dc_module")
+                and self.toolhead_kin.dc_module is not None):
+            self._init_idex_axes_steppers(config)
+            return
+        self._init_hybrid_axes_steppers(config)
 
     def axes_sync(self, axes):
         axes = axes[::-1]
