@@ -685,7 +685,7 @@ class BaseSensorHelper:
 
     def measure_deviation(self):
         # Measure the impact
-        self.axis.buzz_move(25)
+        self.axis.buzz_move(5)
         self.flush_data()
         self.axis.toggle_main_stepper(1, (PIN_MIN_TIME,))
         self.axis.toggle_main_stepper(0, (PIN_MIN_TIME,))
@@ -881,6 +881,58 @@ class EncoderHelper(BaseSensorHelper):
         else:
             self.axis.set_move_dir(1)
         self.msg_helper.direction_msg(self.axis)
+
+
+class StallGuardHelper(BaseSensorHelper):
+    def __init__(self, axis, chip_name):
+        super().__init__(axis, chip_name)
+        self.dim_type = 'sgresult'
+
+    def _init_chip_config(self):
+        tmc = self.printer.lookup_object(self.chip_name)
+        self.chip_config = tmc.get_status.__self__.record_helper
+        self.chip_config.batch_interval = 0.05
+
+    def update_start_time(self):
+        self.request_start_time = self.toolhead.get_last_move_time()
+        self.chip_config.batch_bulk.add_client(self._handle_batch)
+
+    def update_end_time(self):
+        self.request_end_time = self.toolhead.get_last_move_time()
+
+    def start_measurements(self):
+        self.flush_data()
+
+    def finish_measurements(self):
+        self.toolhead.wait_moves()
+        self.is_finished = True
+
+    def calc_deviation(self):
+        # Calculate impact sg_result on tmc driver
+        sg_results = self._get_samples()[:, 0]
+        self.is_finshed = True
+        sgs_len = sg_results.shape[0]
+        static_zone = range(sgs_len // 5, sgs_len // 3)
+        # Calculate static position
+        static = np.mean(sg_results[static_zone])
+        # Return avg of 5 max sgs with deduction static
+        deviation = np.mean(np.sort(sg_results)[-5:])
+        deviation = np.around(deviation - static, 2)
+        return deviation
+
+    def detect_move_dir(self):
+        # Determine axis movement direction
+        self.axis.set_move_dir(0)
+        self.axis.calc_move_msteps()
+        self.axis.step_move()
+        self.axis.new_magnitude = self.measure_deviation()
+        self.msg_helper.stepped_msg(self.axis)
+        if self.axis.new_magnitude > self.axis.magnitude:
+            self.axis.set_move_dir(-1)
+        else:
+            self.axis.set_move_dir(1)
+        self.msg_helper.direction_msg(self.axis)
+        self.axis.magnitude = self.axis.new_magnitude
 
 
 class FanController:
@@ -1149,7 +1201,7 @@ class MotionAxis:
         if not self.axes_steps_diff:
             self.axes_steps_diff = self.config.getint(
                 'axes_steps_diff', self.max_step_size + 1, minval=1)
-        rmin = self.move_d * 1e3
+        rmin = 0
         self.retry_tolerance = self.config.getfloat(
             f'retry_tolerance_{name}', default=0, above=rmin)
         if not self.retry_tolerance:
@@ -1468,23 +1520,30 @@ class MotionAxis:
             self.chip_helper = AccelHelper(self, accel_chip_name)
 
     def _init_chip_helper(self):
-        accel_chip_name = self.config.get(f'accel_chip_{self.name}', '')
-        enc_chip_name = self.config.get(f'encoder_chip_{self.name}', '')
-        if accel_chip_name and enc_chip_name:
+        accel_chip_name = self.config.get(f'accel_chip_{self.name}', None)
+        enc_chip_name = self.config.get(f'encoder_chip_{self.name}', None)
+        sg_chip_name = self.config.get(f'sg_chip_{self.name}', None)
+        chips = [accel_chip_name, enc_chip_name, sg_chip_name]
+        selected = [c for c in chips if c is not None]
+        if len(selected) > 1:
             raise self.config.error(f"motors_sync: Only 1 sensor "
                                     f"type can be selected")
-        if not accel_chip_name and not enc_chip_name:
-            accel_chip_name = self.config.get('accel_chip', '')
-        if not accel_chip_name and not enc_chip_name:
+        if len(selected) == 0:
+            accel_chip_name = self.config.get('accel_chip', None)
+        if len(selected) == 0 and not accel_chip_name:
             raise self.config.error(
                 f"motors_sync: Sensors type 'accel_chip' or "
-                f"'encoder_chip_<axis>' must be provided")
+                f"'encoder_chip_<axis>' or 'sg_chip_<axis>' "
+                f"must be provided")
         if accel_chip_name:
             self.init_accel_chip_helper(accel_chip_name)
             def_steps_model = ['linear', 20000, 0]
         elif enc_chip_name:
             self.chip_helper = EncoderHelper(self, enc_chip_name)
             def_steps_model = ['enc_auto', self.move_d]
+        elif sg_chip_name:
+            self.chip_helper = StallGuardHelper(self, sg_chip_name)
+            def_steps_model = ['linear', 5, 0]
         else:
             raise
         self._init_steps_models(def_steps_model)
@@ -1516,6 +1575,9 @@ class MotorsSync:
         self.gcode.register_command('SYNC_MOTORS_DEVIATION_RANGE',
                                 self.cmd_SYNC_MOTORS_DEVIATION_RANGE,
                                 desc=self.cmd_SYNC_MOTORS_DEVIATION_RANGE_help)
+        self.gcode.register_command('SYNC_MOTORS_STEPPERS_LINEARITY',
+                                self.cmd_SYNC_MOTORS_STEPPERS_LINEARITY,
+                                desc=self.cmd_SYNC_MOTORS_STEPPERS_LINEARITY_help)
         # Variables
         self.reactor = self.printer.get_reactor()
 
@@ -1582,6 +1644,15 @@ class MotorsSync:
         if not hasattr(self, 'debug_helper'):
             self.debug_helper = MotionAxisDebugHelper(self)
         self.debug_helper.analyze_axis_deviation_range(gcmd)
+        self.status.reset()
+
+    cmd_SYNC_MOTORS_STEPPERS_LINEARITY_help = \
+        'Analyze axis steppers linearity'
+    def cmd_SYNC_MOTORS_STEPPERS_LINEARITY(self, gcmd):
+        # Analyze axis steppers linearity
+        if not hasattr(self, 'debug_helper'):
+            self.debug_helper = MotionAxisDebugHelper(self)
+        self.debug_helper.analyze_axis_steppers_linearity(gcmd)
         self.status.reset()
 
     def get_status(self, eventtime):
@@ -1795,12 +1866,16 @@ class MotionAxisDebugHelper:
         self.printer = sync.printer
         self.reactor = self.printer.get_reactor()
         self.gcode = self.printer.lookup_object('gcode')
+        self.printer.register_event_handler(
+            "klippy:shutdown", self._handle_shutdown)
         try:
             self._load_modules()
         except ImportError as e:
             raise self.gcode.error(f'motors_sync: Could not import: {e}')
         self.path = os.path.expanduser(PLOT_PATH)
         self.check_export_path()
+        self.steppers_linearity_samples = None
+        self.steppers_linearity_samples_2nd = None
 
     @staticmethod
     def _load_modules():
@@ -1963,6 +2038,139 @@ class MotionAxisDebugHelper:
                                    f'with error: {res[0]}')
         if res[0]:
             self.gcode.respond_info(str(res[0]))
+
+    def _handle_shutdown(self):
+        try:
+            logging.info(f"Dump MotionAxisDebugHelper")
+            logging.info(f"steppers_linearity_samples={self.steppers_linearity_samples}")
+            logging.info(f"steppers_linearity_samples_2nd={self.steppers_linearity_samples_2nd}")
+        except Exception as e:
+            logging.info(f"MotionAxisDebugHelper exception in handle shutdown e={e}")
+
+    def save_samples(self, samples, name):
+        path = os.path.expanduser(PLOT_PATH)
+        os.makedirs(path, exist_ok=True)
+        arr = np.array(samples, dtype=object)
+        np.save(os.path.join(path, name), arr)
+
+    def analyze_axis_steppers_linearity(self, gcmd):
+        axis_name = gcmd.get('AXIS').lower()
+        m = self.kin_helper.motion_axes.get(axis_name)
+        if m is None:
+            raise self.gcode.error(f'Invalid axis: {axis_name.upper()}')
+        peak_mstep = gcmd.get_int('DISTANCE', 48, minval=2, maxval=16 * 1e10)
+        self.gcode.respond_info(
+            f'Analyze axis steppers linearity started on {m.name_prefixed} '
+            f'axis, move to +-{peak_mstep}/16 microstep')
+        # self.gcode.respond_info('Synchronizing before calibration...')
+        # self.kin_helper.start_sync(force_run=True)
+        # m.chip_helper.collect_samples = True
+        m.on_start()
+        m.move_on_measure_pos()
+        m.toggle_conflict_steppers(0)
+        fullstep_dist = m.move_d * m.microsteps
+        steps_scale = int(m.microsteps // 16)
+        steps_count = int((fullstep_dist * (peak_mstep / 16))
+                          / m.move_d / steps_scale) * 2
+        start_step = int(steps_count / 2)
+        move_d = m.move_d * steps_scale
+        peak_abs_pos = move_d * start_step
+        mcu_steppers = m.get_steppers()['self_steppers']
+        mcu_tmcs = m.get_steppers()['self_tmcs']
+        query_phase_tasks = []
+        for s, t in zip(mcu_steppers, mcu_tmcs):
+            query_phase_tasks.append(lambda s=s, t=t: m._query_phase(s, t))
+        m.stepper_move.manual_move(mcu_steppers, [peak_abs_pos * -1])
+        m.move_msteps = 1 * steps_scale
+        read_reg = TMCReadRegisters(self.printer)
+        def _measure():
+            __samples = []
+            for i in range(1):
+                m.new_magnitude = m.measure_deviation()
+                __samples.append(m.new_magnitude)
+                self.msg_helper.static_msg(m)
+            ptime = m.toolhead.get_last_move_time() + 0.01
+            read_reg.add_read_task(ptime, query_phase_tasks, read_reg_callback)
+            m.toolhead.dwell(0.05)
+            _samples[1].append(__samples)
+        self.steppers_linearity_samples = samples = []
+        # invs = [1, -1]
+        invs = [1,]
+        for inv in invs:
+            m.set_move_dir(inv)
+            self.msg_helper.direction_msg(m)
+            self.steppers_linearity_samples_2nd = _samples = [[], []]
+            read_reg_callback = lambda res: _samples[0].append(res)
+            m.toolhead.wait_moves()
+            _measure()
+            m.toolhead.dwell(0.1)
+            for _ in range(steps_count):
+                m.stepper_move.manual_move(mcu_steppers, [move_d * inv])
+                _measure()
+            m.toolhead.wait_moves()
+            samples.append(_samples)
+        m.stepper_move.manual_move(mcu_steppers, [peak_abs_pos])
+        m.flush_motion_data()
+        m.on_done()
+        m.chip_helper.collect_samples = False
+        m.chip_helper.save_samples()
+        logging.info(f"motors_sync_axis_linearity: {samples}")
+        now = datetime.now().strftime('%Y%m%d_%H%M%S')
+        name = f"axis_linearity_{m.name}_{now}.npy"
+        self.save_samples(samples, name)
+        _samples.clear()
+        samples.clear()
+
+
+class TaskTimer:
+    def __init__(self, printer, task, ptime):
+        self.mcu = printer.lookup_object('mcu')
+        self.gcode = printer.lookup_object('gcode')
+        self.task = task
+        self.ptime = ptime
+        self.result = None
+        self.is_finished = False
+        self.reactor = printer.get_reactor()
+        self.timer_handler = self.reactor.register_timer(
+            self._task_timer, self.reactor.NOW)
+
+    def _task_timer(self, eventtime):
+        est_print_time = self.mcu.estimated_print_time(eventtime)
+        if est_print_time >= self.ptime - 0.0005:
+            self.result = self.task()
+            delta_t = est_print_time-self.ptime
+            if delta_t > 0.05:
+                self.gcode.respond_info(f"Register reader warning delta_t={delta_t}")
+            self.is_finished = True
+            return self.reactor.NEVER
+        return eventtime + 0.001
+
+
+class TMCReadRegisters:
+    def __init__(self, printer):
+        self.printer = printer
+        self.reactor = reactor = printer.get_reactor()
+        self.tasks = []
+        reactor.register_timer(self._check_task_finish, reactor.NOW)
+
+    def _check_task_finish(self, eventtime):
+        if len(self.tasks) == 0:
+            return eventtime + 0.1
+        for taks in self.tasks[:]:
+            timers = taks[0]
+            finish_callback = taks[1]
+            if all(t.is_finished for t in timers):
+                finish_callback([t.result for t in timers])
+                for timer in timers:
+                    self.reactor.unregister_timer(timer.timer_handler)
+                self.tasks.remove(taks)
+        return eventtime + 0.01
+
+    def add_read_task(self, ptime, tasks, finish_callback):
+        timers = []
+        for task in tasks:
+            timers.append(TaskTimer(self.printer, task, ptime))
+        self.tasks.append([timers, finish_callback])
 
 
 class KalmanLiteFilter:
