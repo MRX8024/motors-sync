@@ -8,6 +8,7 @@ from datetime import datetime
 import numpy as np
 import chelper
 from .z_tilt import ZAdjustStatus
+from .shaper_defs import INPUT_SHAPERS
 
 PLOT_PATH = '~/printer_data/config/adxl_results/motors_sync'
 PIN_MIN_TIME = 0.010            # Minimum wait time to enable hardware pin
@@ -119,8 +120,10 @@ class BaseKinematics:
         for axis in axes:
             axis.on_error()
             self.msg_helper.done_msg(axis)
+        self.stepper_move.restore_kin_flush_delay()
 
     def run_sync(self, axes, force_run=False):
+        self.stepper_move.update_kin_flush_delay()
         self.home_rails(axes)
         self.apply_axes_phase_offsets(axes)
         # Init axes magnitudes
@@ -135,6 +138,7 @@ class BaseKinematics:
             return
         self.axes_sync(axes)
         self.end_sync(axes)
+        self.stepper_move.restore_kin_flush_delay()
 
     def start_sync(self, axes=None, force_run=False):
         if axes is None:
@@ -382,6 +386,9 @@ class DummyPrinterMotionQueuing:
     def wipe_trapq(self, trapq):
         return
 
+    def check_step_generation_scan_windows(self):
+        return
+
 
 class StepperManualMove:
     from . import force_move
@@ -399,6 +406,8 @@ class StepperManualMove:
         ffi_main, ffi_lib = chelper.get_ffi()
         self.stepper_kin = ffi_main.gc(
             ffi_lib.cartesian_stepper_alloc(b'x'), ffi_lib.free)
+        if not isinstance(self.motion_queuing, DummyPrinterMotionQueuing):
+            self.alloc_stepper_shaper()
         printer.register_event_handler("klippy:connect",
                                        self._handle_connect)
 
@@ -406,6 +415,18 @@ class StepperManualMove:
         self.toolhead = self.printer.lookup_object('toolhead')
         self.travel_speed = min(self.toolhead.max_velocity, 100)
         self.travel_accel = min(self.toolhead.max_accel, 5000)
+
+    def alloc_stepper_shaper(self):
+        ffi_main, ffi_lib = chelper.get_ffi()
+        is_sk = ffi_main.gc(ffi_lib.input_shaper_alloc(), ffi_lib.free)
+        set_sk = ffi_lib.input_shaper_set_sk(is_sk, self.stepper_kin) == 0
+        shaper = next(s for s in INPUT_SHAPERS if s.name == "3hump_ei")
+        is_params = shaper.init_func(100, shaper.max_damping_ratio)
+        set_sk_params = ffi_lib.input_shaper_set_shaper_params(
+            is_sk, b'x', len(is_params[0]), *is_params) == 0
+        if not all((set_sk, set_sk_params)):
+            raise Exception("Internal error in motors_sync")
+        self.stepper_kin = is_sk
 
     def steppers_enable(self, mcu_steppers, mode):
         ptime = self.toolhead.get_last_move_time()
@@ -420,6 +441,19 @@ class StepperManualMove:
                 el.motor_disable(ptime)
             did_change = True
         return did_change
+
+    def update_kin_flush_delay(self):
+        self.toolhead.flush_step_generation()
+        kin = self.toolhead.get_kinematics()
+        stepper = next(s for s in kin.get_steppers())
+        prev_sk = stepper.get_stepper_kinematics()
+        stepper.set_stepper_kinematics(self.stepper_kin)
+        self.motion_queuing.check_step_generation_scan_windows()
+        stepper.set_stepper_kinematics(prev_sk)
+
+    def restore_kin_flush_delay(self):
+        self.toolhead.flush_step_generation()
+        self.motion_queuing.check_step_generation_scan_windows()
 
     def manual_move(self, mcu_stepper, moves):
         self.toolhead.flush_step_generation()
