@@ -308,14 +308,18 @@ class BeaconAccelHelper(AccelHelper):
         super().__init__(axis, chip_name)
 
     def _init_beacon_config(self):
+        class BeaconAccelConfigAdapter:
+            def __init__(self, beacon):
+                self.accel_helper = beacon.accel_helper
+                # Beacon use "batch_bulk" named as "_api_dump"
+                self.batch_bulk = beacon.accel_helper._api_dump
+            def __getattr__(self, name):
+                return getattr(self.accel_helper, name)
         beacon = self.printer.lookup_object(self.chip_name)
-        # Beacon "chip_config" is "beacon.accel_helper"
-        self.chip_config = beacon.accel_helper
-        if self.chip_config is None:
+        if beacon.accel_helper is None:
             msg = "This Beacon has no accelerometer"
             raise self.printer.config_error(msg)
-        # Beacon use self-written "batch_bulk" named as "_api_dump"
-        self.chip_config.batch_bulk = self.chip_config._api_dump
+        self.chip_config = BeaconAccelConfigAdapter(beacon)
         # Beacon module doesn't have "data_rate" attribute
         # Beacon adxl345 sampling rate > ACCEL_FILTER_THRESHOLD
         self._init_chip_filter()
