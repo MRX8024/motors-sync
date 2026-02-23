@@ -179,6 +179,13 @@ class BaseSensorHelper:
         self.toolhead.wait_moves()
         self.is_finished = True
 
+    def dump_sensor(self):
+        conn_helper = self.chip_config.mcu._conn_helper
+        csync = conn_helper.get_clocksync().dump_debug()
+        serial = conn_helper.get_serial().dump_debug()
+        logging.info(f"Dumping {self.chip_name} communication "
+                     f"history\n{csync}\n{serial}")
+
     def _wait_samples(self):
         now = self.reactor.monotonic()
         est_ptime = self.chip_config.mcu.estimated_print_time(now)
@@ -191,6 +198,7 @@ class BaseSensorHelper:
                 if last_mcu_time >= self.request_end_time:
                     return True
             if now > wait_limit:
+                self.dump_sensor()
                 raise Exception(f"No data from '{self.chip_name}'")
 
     def _get_samples(self):
