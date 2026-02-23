@@ -180,17 +180,18 @@ class BaseSensorHelper:
         self.is_finished = True
 
     def _wait_samples(self):
-        lim = self.reactor.monotonic() + 5.
+        now = self.reactor.monotonic()
+        est_ptime = self.chip_config.mcu.estimated_print_time(now)
+        wait_limit = now + self.request_end_time - est_ptime + 1.
         while True:
             now = self.reactor.monotonic()
             self.reactor.pause(now + 0.010)
-            if self.samples and self.request_end_time:
+            if self.samples:
                 last_mcu_time = self.samples[-1][0]
-                if last_mcu_time > self.request_end_time:
+                if last_mcu_time >= self.request_end_time:
                     return True
-                elif now > lim:
-                    raise Exception(
-                        'motors_sync: No data from sensor')
+            if now > wait_limit:
+                raise Exception(f"No data from '{self.chip_name}'")
 
     def _get_samples(self):
         self._wait_samples()
@@ -313,6 +314,7 @@ class BeaconAccelHelper(AccelHelper):
                 self.accel_helper = beacon.accel_helper
                 # Beacon use "batch_bulk" named as "_api_dump"
                 self.batch_bulk = beacon.accel_helper._api_dump
+                self.mcu = beacon._mcu
             def __getattr__(self, name):
                 return getattr(self.accel_helper, name)
         beacon = self.printer.lookup_object(self.chip_name)
