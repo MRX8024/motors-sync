@@ -331,6 +331,11 @@ class BeaconAccelHelper(AccelHelper):
         # create BeaconAccelHelper in the klippy:connect stage
         self._run_on_connect(self._init_beacon_config)
 
+    def start_measurements(self):
+        self.flush_data()
+        self.toolhead.wait_moves()
+        self.chip_config.batch_bulk.add_client(self._handle_batch)
+
     def _handle_batch(self, batches):
         hb = super()._handle_batch
         for batch in batches:
