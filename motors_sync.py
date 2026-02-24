@@ -180,9 +180,19 @@ class BaseSensorHelper:
         self.is_finished = True
 
     def dump_sensor(self):
-        conn_helper = self.chip_config.mcu._conn_helper
-        csync = conn_helper.get_clocksync().dump_debug()
-        serial = conn_helper.get_serial().dump_debug()
+        csync = None
+        serial = None
+        try:
+            conn_helper = self.chip_config.mcu._conn_helper
+            csync = conn_helper.get_clocksync().dump_debug()
+            serial = conn_helper.get_serial().dump_debug()
+        except BaseException as e:
+            logging.info(f"Failed to dump sensor e={e}")
+            try:
+                csync = self.chip_config.mcu._clocksync.dump_debug()
+                serial = self.chip_config.mcu._serial.dump_debug()
+            except BaseException as e:
+                logging.info(f"Failed to dump sensor e={e}")
         logging.info(f"Dumping {self.chip_name} communication "
                      f"history\n{csync}\n{serial}")
 
