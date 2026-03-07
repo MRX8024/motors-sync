@@ -667,6 +667,7 @@ class BeaconAccelHelper(AccelHelper):
 
 # Encoder-based sensor helper calculating stepper positional values.
 class EncoderHelper(BaseSensorHelper):
+    UNITS_SCALE = 1e3
     MIN_SAMPLE_PERIOD = 0.000400
     def __init__(self, axis, chip_name):
         super().__init__(axis, chip_name)
@@ -680,13 +681,14 @@ class EncoderHelper(BaseSensorHelper):
         self._check_encoder_place()
 
     def _check_retry_tolerance(self):
-        half_step_distance_um = np.ceil(self.axis.move_d * 1e3 / 2)
+        step_dist = self.axis.move_d
+        half_step_dist_um = np.ceil(step_dist / 2 * self.UNITS_SCALE)
         retry_tolerance = self.axis.retry_tolerance
-        if retry_tolerance < half_step_distance_um:
+        if retry_tolerance < half_step_dist_um:
             raise self.printer.config_error(
                 f"motors_sync: Parameter 'retry_tolerance' cannot "
                 f"be less than microsteps half microstep distance, "
-                f"{retry_tolerance} < {half_step_distance_um} (µm)")
+                f"{retry_tolerance} < {half_step_dist_um} (µm)")
 
     def _check_sample_rate(self):
         per = self.chip_config.sample_period
@@ -729,7 +731,7 @@ class EncoderHelper(BaseSensorHelper):
         top_dev_ids = np.argsort(np.abs(deviations))[-5:]
         deviation = np.mean(deviations[top_dev_ids])
         dev_norm = self._normalize_encoder_pos(deviation)
-        deviation = np.around(dev_norm[1] * 1e3, 2)
+        deviation = np.around(dev_norm[1] * self.UNITS_SCALE, 2)
         abs_deviation = abs(deviation)
         self.last_raw_deviation = deviation
         return abs_deviation
@@ -1053,7 +1055,7 @@ class MotionAxis:
             "exponential": {"count": 3, "a_forbidden": 0,
                 "f": lambda fx, c: np.log((fx - c[2]) / c[0]) / c[1]},
             "enc_auto": {"count": 1, "a_forbidden": 0, "scale": 1,
-                "f": lambda fx, c: fx / 1e3 / c[0]}}
+                "f": lambda fx, c: fx / EncoderHelper.UNITS_SCALE / c[0]}}
         model = config.getlist(f'steps_model_{self.name}', None)
         if model is None:
             model = config.getlist('steps_model', def_model)
