@@ -543,6 +543,8 @@ class AccelHelper(BaseSensorHelper):
             raise Exception("Internal error in motors_sync")
         if config is not None and cfp is None:
             self._read_config_chip_filter(config)
+        self._get_axes_mask = None
+        self._init_axes_mask()
 
     def get_chip_filter_params(self):
         return self.chip_filter_params
@@ -594,6 +596,16 @@ class AccelHelper(BaseSensorHelper):
             # smooth out the already barely noticeable peaks.
             self.chip_filter = lambda data: data
 
+    def _init_axes_mask(self):
+        if 'z' in self.axis.get_physical_axes():
+            def mask(static_data):
+                return np.ones(static_data.shape[1], dtype=bool)
+        else:
+            def mask(static_data):
+                z_axis = np.mean(np.abs(static_data), axis=0).argmax()
+                return np.arange(static_data.shape[1]) != z_axis
+        self._get_axes_mask = mask
+
     def calc_deviation(self):
         # Calculate impact magnitude
         vects = self._get_samples()
@@ -602,10 +614,8 @@ class AccelHelper(BaseSensorHelper):
         # cases there may be residual values of toolhead inertia.
         # It is better to take a shifted zone from zero.
         static_zone = range(vects_len // 5, vects_len // 3)
-        z_cut_zone = vects[static_zone, :]
-        z_axis = np.mean(np.abs(z_cut_zone), axis=0).argmax()
-        xy_mask = np.arange(vects.shape[1]) != z_axis
-        magnitudes = np.linalg.norm(vects[:, xy_mask], axis=1)
+        axes_mask = self._get_axes_mask(vects[static_zone, :])
+        magnitudes = np.linalg.norm(vects[:, axes_mask], axis=1)
         # Add median, Kalman or none filter
         magnitudes = self.chip_filter(magnitudes)
         # Calculate static noise
