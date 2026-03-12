@@ -311,6 +311,66 @@ class CoreXYKinematics(BaseKinematics):
         return sorted({axis.name for axis in self.motion_axes.values()})
 
 
+# AWD linear delta kinematics implementation
+class DeltaKinematics(BaseKinematics):
+    def __init__(self, config, sync):
+        super().__init__(config, sync)
+
+    @staticmethod
+    def get_arms_closest_perpend_pos(config, axes):
+        positions = {}
+        pt_sec = config.getsection('printer')
+        z_min = pt_sec.getfloat('minimum_z_position', 0)
+        delta_r = pt_sec.getfloat('delta_radius', above=0.)
+        print_r = pt_sec.getfloat('print_radius', delta_r, above=0.)
+        def_angles = {'a': 210., 'b': 330., 'c': 90.}
+        for axis in axes:
+            st_sec = config.getsection('stepper_' + axis)
+            angle = st_sec.getfloat('angle', def_angles[axis])
+            x_pos, y_pos = (np.cos(np.radians(angle)) * print_r,
+                            np.sin(np.radians(angle)) * print_r)
+            positions.update({axis: [x_pos, y_pos, z_min + 10]})
+        return positions
+
+    def _init_axes(self, config, sync):
+        valid_axes = ['a', 'b', 'c']
+        axes = sorted([a.lower() for a in config.getlist('axes')])
+        if any(a not in valid_axes for a in axes):
+            raise config.error(f"motors_sync: Invalid axes '{axes}'")
+        sync_pos = self.get_arms_closest_perpend_pos(config, axes)
+        ph_offs = self.stats_helper.get_axes_phase_offsets(axes)
+        self.motion_axes.update(
+            {ax: MotionAxis(config, sync, ax, 'xyz', ph_offs.get(ax),
+                'stepper_' + ax, sync_pos[ax], False) for ax in axes})
+
+    def _init_axes_steppers(self, config):
+        for axis in self.motion_axes.values():
+            belt_steppers = [s for s in self.toolhead_kin.get_steppers()
+                             if 'stepper_' + axis.name in s.get_name()]
+            if len(belt_steppers) not in (2,):
+                raise config.error(
+                    f"motors_sync: Not supported "
+                    f"'{len(belt_steppers)}' count of motors")
+            axis.add_steppers(*belt_steppers, belt_steppers[1], None)
+
+    def axes_sync(self, axes):
+        # To skip extra measure_deviation() in axis_sync_step()
+        axes[0].detect_move_dir()
+        for m in axes:
+            while True:
+                if m.is_finished:
+                    if all(m.is_finished for m in axes):
+                        return
+                    break
+                self.axis_sync_step(m)
+
+    def calibrate_axis_steps_model(self, axis, peak_mstep, repeats):
+        return self.axis_calibrate_cycle(axis, peak_mstep, repeats)
+
+    def get_linked_calibration_axes(self, axis):
+        return sorted({axis.name for axis in self.motion_axes.values()})
+
+
 # Parse kinematics from configfile and choosing from supported ones.
 class KinematicsParser:
     @staticmethod
@@ -1007,6 +1067,8 @@ class MotionAxis:
         fspr = st_section.getint('full_steps_per_rotation', 200)
         self.buzz_moves = {}
         self.rel_buzz_d = self.rd / fspr * 5
+        if self.start_sync_pos[2] is not None:
+            self.start_sync_pos[2] += self.rel_buzz_d
         msteps_dict = {m: m for m in self.VALID_MSTEPS}
         self.microsteps = config.getchoice(
             f'microsteps_{name}', msteps_dict, default=0)
