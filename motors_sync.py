@@ -113,7 +113,8 @@ class BaseKinematics:
         # Init axes magnitudes
         for ax in axes:
             ax.on_start()
-            ax.init_magnitude = ax.magnitude = ax.measure_deviation()
+            ax.init_magnitude = ax.new_magnitude = \
+                ax.magnitude = ax.measure_deviation()
             self.msg_helper.start_msg(ax)
         # Check if all axes in tolerance
         if not force_run and self.is_axes_in_tolerance(axes):
@@ -618,6 +619,7 @@ class AccelHelper(BaseSensorHelper):
     def detect_move_dir(self):
         # Determine axis movement direction
         self.axis.set_move_dir(0)
+        self.axis.calc_move_msteps(min_steps=2)
         self.axis.step_move()
         self.axis.new_magnitude = self.measure_deviation()
         self.msg_helper.stepped_msg(self.axis)
@@ -743,7 +745,6 @@ class EncoderHelper(BaseSensorHelper):
         else:
             self.axis.set_move_dir(1)
         self.msg_helper.direction_msg(self.axis)
-        self.axis.new_magnitude = self.axis.magnitude
 
 
 # Base fan controller class for managing fans during sync process.
@@ -981,7 +982,7 @@ class MotionAxis:
         sync.add_connect_task(self._handle_connect)
         self.move_dir = []
         self.set_move_dir(0)
-        self.move_msteps = 2
+        self.move_msteps = 1
         self.actual_msteps = 0
         self.drift_msteps = 0
         self.init_magnitude = 0.
@@ -1181,7 +1182,7 @@ class MotionAxis:
 
     def flush_motion_data(self):
         self.set_move_dir(0)
-        self.move_msteps = 2
+        self.move_msteps = 1
         self.actual_msteps = 0
         self.drift_msteps = 0
         self.init_magnitude = 0.
@@ -1322,9 +1323,9 @@ class MotionAxis:
         mcu_stepper = self.steppers['buzz_stepper']
         self.stepper_move.manual_move(mcu_stepper, [dist])
 
-    def calc_move_msteps(self, dev=None):
+    def calc_move_msteps(self, dev=None, min_steps=1):
         dev = self.new_magnitude if dev is None else dev
-        steps_to_zero = max(int(self.steps_model_solve(dev)), 1)
+        steps_to_zero = max(int(self.steps_model_solve(dev)), min_steps)
         self.move_msteps = min(steps_to_zero, self.max_step_size)
 
     def step_move(self, dir=1):
