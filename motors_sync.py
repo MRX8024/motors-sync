@@ -373,9 +373,8 @@ class StepperManualMove:
             self.motion_queuing = DummyPrinterMotionQueuing(config)
         self.trapq = self.motion_queuing.allocate_trapq()
         self.trapq_append = self.motion_queuing.lookup_trapq_append()
-        ffi_main, ffi_lib = chelper.get_ffi()
-        self.stepper_kin = ffi_main.gc(
-            ffi_lib.cartesian_stepper_alloc(b'x'), ffi_lib.free)
+        self.stepper_kins = []
+        self.note_steppers_count(1)
         printer.register_event_handler("klippy:connect",
                                        self._handle_connect)
 
@@ -383,6 +382,12 @@ class StepperManualMove:
         self.toolhead = self.printer.lookup_object('toolhead')
         self.travel_speed = min(self.toolhead.max_velocity, 100)
         self.travel_accel = min(self.toolhead.max_accel, 5000)
+
+    def note_steppers_count(self, count):
+        ffi_main, ffi_lib = chelper.get_ffi()
+        for i in range(count - len(self.stepper_kins)):
+            self.stepper_kins.append(ffi_main.gc(
+                ffi_lib.cartesian_stepper_alloc(b'x'), ffi_lib.free))
 
     def steppers_enable(self, mcu_steppers, mode):
         ptime = self.toolhead.get_last_move_time()
@@ -398,11 +403,24 @@ class StepperManualMove:
             did_change = True
         return did_change
 
-    def manual_move(self, mcu_stepper, moves):
+    def _set_new_stepper_kins(self, mcu_steppers):
+        prev_stepper_kins = {}
+        for i, mcu_st in enumerate(mcu_steppers):
+            prev_stepper_kins[mcu_st] = \
+                mcu_st.set_stepper_kinematics(self.stepper_kins[i])
+            mcu_st.set_trapq(self.trapq)
+            mcu_st.set_position((0., 0., 0.))
+        return prev_stepper_kins
+
+    def _set_old_stepper_kins(self, prev_stepper_kins):
+        trapq = self.toolhead.get_trapq()
+        for mcu_stepper, kin in prev_stepper_kins.items():
+            mcu_stepper.set_stepper_kinematics(kin)
+            mcu_stepper.set_trapq(trapq)
+
+    def manual_move(self, mcu_steppers, moves):
         self.toolhead.flush_step_generation()
-        prev_sk = mcu_stepper.set_stepper_kinematics(self.stepper_kin)
-        prev_trapq = mcu_stepper.set_trapq(self.trapq)
-        mcu_stepper.set_position((0., 0., 0.))
+        prev_stepper_kins = self._set_new_stepper_kins(mcu_steppers)
         ptime = start_ptime = self.toolhead.get_last_move_time()
         last_pos = 0.0
         for move in moves:
@@ -415,13 +433,13 @@ class StepperManualMove:
                 0., 0., axis_r, 0., 0., 0., cruise_v, self.travel_accel)
             ptime = ptime + accel_t + cruise_t + accel_t
             last_pos += move
-        if hasattr(mcu_stepper, 'generate_steps'):
-            mcu_stepper.generate_steps(ptime)
+        if hasattr(mcu_steppers[0], 'generate_steps'):
+            for mcu_stepper in mcu_steppers:
+                mcu_stepper.generate_steps(ptime)
         self.motion_queuing.note_mcu_movequeue_activity(ptime)
         self.toolhead.dwell(ptime - start_ptime)
         self.toolhead.flush_step_generation()
-        mcu_stepper.set_trapq(prev_trapq)
-        mcu_stepper.set_stepper_kinematics(prev_sk)
+        self._set_old_stepper_kins(prev_stepper_kins)
         self.motion_queuing.wipe_trapq(self.trapq)
 
 
@@ -1268,12 +1286,12 @@ class MotionAxis:
         en1 = self.stepper_move.steppers_enable([en_mcu_stepper], 0)
         en2 = self.stepper_move.steppers_enable([st_mcu_stepper], 1)
         self.toolhead.dwell(MOTOR_STALL_TIME)
-        self.stepper_move.manual_move(st_mcu_stepper, [move_dist1])
+        self.stepper_move.manual_move([st_mcu_stepper], [move_dist1])
         self.toolhead.dwell(MOTOR_STALL_TIME)
         self.stepper_move.steppers_enable([st_mcu_stepper], 0)
         self.stepper_move.steppers_enable([en_mcu_stepper], 1)
         self.toolhead.dwell(MOTOR_STALL_TIME)
-        self.stepper_move.manual_move(en_mcu_stepper, [move_dist2])
+        self.stepper_move.manual_move([en_mcu_stepper], [move_dist2])
         self.toolhead.dwell(MOTOR_STALL_TIME)
         self.gcode.respond_info(
             f'{self.name_prefixed}-Restore previous '
@@ -1321,7 +1339,7 @@ class MotionAxis:
     def manual_move(self, dist):
         self.toggle_conflict_steppers(0)
         mcu_stepper = self.steppers['buzz_stepper']
-        self.stepper_move.manual_move(mcu_stepper, [dist])
+        self.stepper_move.manual_move([mcu_stepper], [dist])
 
     def calc_move_msteps(self, dev=None, min_steps=1):
         dev = self.new_magnitude if dev is None else dev
@@ -1334,7 +1352,7 @@ class MotionAxis:
         dist = self.move_d * move_msteps
         self.actual_msteps += move_msteps
         self.drift_msteps += move_msteps
-        self.stepper_move.manual_move(mcu_stepper, [dist])
+        self.stepper_move.manual_move([mcu_stepper], [dist])
 
     def _gen_buzz_moves(self, rel_moves):
         moves = []
@@ -1355,7 +1373,7 @@ class MotionAxis:
         moves = self.buzz_moves.get(
             rel_moves, self._gen_buzz_moves(rel_moves))
         self.toggle_main_stepper(0, (PIN_MIN_TIME,)*2)
-        self.stepper_move.manual_move(mcu_stepper, moves)
+        self.stepper_move.manual_move([mcu_stepper], moves)
 
     def measure_deviation(self):
         self.move_on_measure_pos()
