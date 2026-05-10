@@ -208,7 +208,8 @@ class CartesianKinematics(BaseKinematics):
                 raise config.error(
                     f"motors_sync: Not supported "
                     f"'{len(belt_steppers)}' count of motors")
-            axis.add_steppers(*belt_steppers, belt_steppers[1], None)
+            axis.add_steppers(belt_steppers[0], [belt_steppers[1]],
+                              [belt_steppers[1]], [])
 
     def axes_sync(self, axes):
         # To skip extra measure_deviation() in axis_sync_step()
@@ -273,8 +274,8 @@ class CoreXYKinematics(BaseKinematics):
         # axis. Two enabled motors on the same axis (belt) can twist
         # the beam due to belt tension desync, distorting measurements.
         dx, dy = axes_alloc_steppers
-        dx[0].add_steppers(dx[1][0], dx[1][1], dx[1][1], [dy[1][0]])
-        dy[0].add_steppers(dy[1][0], dy[1][1], dy[1][1], [dx[1][0]])
+        dx[0].add_steppers(dx[1][0], [dx[1][1]], [dx[1][1]], [dy[1][0]])
+        dy[0].add_steppers(dy[1][0], [dy[1][1]], [dy[1][1]], [dx[1][0]])
 
     def check_axis_drift(self, m, s):
         steps_diff = abs(abs(m.drift_msteps) - abs(s.drift_msteps))
@@ -1160,25 +1161,30 @@ class MotionAxis:
                     f'count, cannot be more than in steppers '
                     f'config, {self.microsteps} > {st_msteps}')
 
-    def add_steppers(self, enable, step, buzz, conflict):
-        self_steppers = list(dict.fromkeys((enable, step, buzz)))
+    def add_steppers(self, enable, steps, buzzs, conflicts):
+        self_steppers = list(dict.fromkeys((enable, *steps, buzzs[0])))
         if len(self_steppers) != 2:
             raise ValueError("Steppers allocation error")
         self_tmcs = list(self._get_tmc_drivers(self_steppers))
         self._validate_steppers(self_steppers, self_tmcs)
+        self.stepper_move.note_steppers_count(max(len(steps), len(buzzs)))
         self.steppers = {
             'self_steppers': self_steppers,
             'self_tmcs': self_tmcs,
             'enable_stepper': enable,
-            'step_stepper': step,
-            'buzz_stepper': buzz,
-            'conflict_steppers': conflict,
+            'step_steppers': steps,
+            'buzz_steppers': buzzs,
+            'conflict_steppers': conflicts,
         }
 
     def swap_steppers(self, en_stepper_name):
+        # Implemented only for simple kinematics
         if self.is_multi_axis:
             return False
         sts = self.steppers
+        if max(len(sts['step_steppers']),
+               len(sts['buzz_steppers'])) > 1:
+            return False
         new_en_stepper = next(
             (st for st in sts['self_steppers']
              if st.get_name() == en_stepper_name), None)
@@ -1188,12 +1194,12 @@ class MotionAxis:
         if new_en_stepper == old_en_stepper:
             raise Exception("Swap same stepper")
         sts['enable_stepper'] = new_en_stepper
-        for key in ('step_stepper', 'buzz_stepper'):
-            curr = sts[key]
+        for key in ('step_steppers', 'buzz_steppers'):
+            curr = sts[key][0]
             if curr is new_en_stepper:
-                sts[key] = old_en_stepper
+                sts[key][0] = old_en_stepper
             elif curr is old_en_stepper:
-                sts[key] = new_en_stepper
+                sts[key][0] = new_en_stepper
         sts['self_steppers'].reverse()
         sts['self_tmcs'].reverse()
         return True
@@ -1281,23 +1287,22 @@ class MotionAxis:
         move_msteps2 = move_msteps - move_msteps1
         move_dist1 = move_msteps1 * self.move_d
         move_dist2 = move_msteps2 * self.move_d * -1
-        en_mcu_stepper = self.steppers['enable_stepper']
-        st_mcu_stepper = self.steppers['step_stepper']
-        en1 = self.stepper_move.steppers_enable([en_mcu_stepper], 0)
-        en2 = self.stepper_move.steppers_enable([st_mcu_stepper], 1)
+        mcu_stepper1, mcu_stepper2 = self.steppers['self_steppers']
+        en1 = self.stepper_move.steppers_enable([mcu_stepper1], 0)
+        en2 = self.stepper_move.steppers_enable([mcu_stepper2], 1)
         self.toolhead.dwell(MOTOR_STALL_TIME)
-        self.stepper_move.manual_move([st_mcu_stepper], [move_dist1])
+        self.stepper_move.manual_move([mcu_stepper2], [move_dist1])
         self.toolhead.dwell(MOTOR_STALL_TIME)
-        self.stepper_move.steppers_enable([st_mcu_stepper], 0)
-        self.stepper_move.steppers_enable([en_mcu_stepper], 1)
+        self.stepper_move.steppers_enable([mcu_stepper2], 0)
+        self.stepper_move.steppers_enable([mcu_stepper1], 1)
         self.toolhead.dwell(MOTOR_STALL_TIME)
-        self.stepper_move.manual_move([en_mcu_stepper], [move_dist2])
+        self.stepper_move.manual_move([mcu_stepper1], [move_dist2])
         self.toolhead.dwell(MOTOR_STALL_TIME)
         self.gcode.respond_info(
             f'{self.name_prefixed}-Restore previous '
             f'position: {move_msteps}/{self.microsteps} step')
-        self.stepper_move.steppers_enable([en_mcu_stepper], en1)
-        self.stepper_move.steppers_enable([st_mcu_stepper], not en2)
+        self.stepper_move.steppers_enable([mcu_stepper1], en1)
+        self.stepper_move.steppers_enable([mcu_stepper2], not en2)
         self.toolhead.dwell(MOTOR_STALL_TIME)
         return True
 
@@ -1319,7 +1324,7 @@ class MotionAxis:
 
     def toggle_conflict_steppers(self, mode):
         mcu_steppers = self.steppers['conflict_steppers']
-        if mcu_steppers is None:
+        if not mcu_steppers:
             return
         ret = self.stepper_move.steppers_enable(mcu_steppers, mode)
         if ret:
@@ -1338,8 +1343,8 @@ class MotionAxis:
 
     def manual_move(self, dist):
         self.toggle_conflict_steppers(0)
-        mcu_stepper = self.steppers['buzz_stepper']
-        self.stepper_move.manual_move([mcu_stepper], [dist])
+        mcu_steppers = self.steppers['buzz_steppers']
+        self.stepper_move.manual_move(mcu_steppers, [dist])
 
     def calc_move_msteps(self, dev=None, min_steps=1):
         dev = self.new_magnitude if dev is None else dev
@@ -1347,12 +1352,12 @@ class MotionAxis:
         self.move_msteps = min(steps_to_zero, self.max_step_size)
 
     def step_move(self, dir=1):
-        mcu_stepper = self.steppers['step_stepper']
+        mcu_steppers = self.steppers['step_steppers']
         move_msteps = self.move_msteps * self.move_dir[0] * dir
         dist = self.move_d * move_msteps
         self.actual_msteps += move_msteps
         self.drift_msteps += move_msteps
-        self.stepper_move.manual_move([mcu_stepper], [dist])
+        self.stepper_move.manual_move(mcu_steppers, [dist])
 
     def _gen_buzz_moves(self, rel_moves):
         moves = []
@@ -1368,12 +1373,12 @@ class MotionAxis:
         return moves
 
     def buzz_move(self, rel_moves=25):
-        # Fading oscillations by <buzz_stepper> stepper
-        mcu_stepper = self.steppers['buzz_stepper']
+        # Fading oscillations by <buzz_steppers> steppers
+        mcu_steppers = self.steppers['buzz_steppers']
         moves = self.buzz_moves.get(
             rel_moves, self._gen_buzz_moves(rel_moves))
         self.toggle_main_stepper(0, (PIN_MIN_TIME,)*2)
-        self.stepper_move.manual_move([mcu_stepper], moves)
+        self.stepper_move.manual_move(mcu_steppers, moves)
 
     def measure_deviation(self):
         self.move_on_measure_pos()
