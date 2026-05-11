@@ -313,6 +313,77 @@ class CoreXYKinematics(BaseKinematics):
         return sorted({axis.name for axis in self.motion_axes.values()})
 
 
+# Axially coupled box-cartesian kinematics implementation
+class BoxCartesianKinematics(BaseKinematics):
+    def __init__(self, config, sync):
+        super().__init__(config, sync)
+
+    @staticmethod
+    def get_box_cartesian_axes_sync_pos(config):
+        x_st_section = config.getsection('stepper_x')
+        x_min_pos = x_st_section.getfloat('position_min', 0)
+        x_max_pos = x_st_section.getfloat('position_max')
+        x_mid_pos = (x_min_pos + x_max_pos) / 2
+        y_st_section = config.getsection('stepper_y')
+        y_min_pos = y_st_section.getfloat('position_min', 0)
+        y_max_pos = y_st_section.getfloat('position_max')
+        y_rd = y_st_section.getfloat('rotation_distance')
+        y_mid_pos = (y_min_pos + y_max_pos) / 2
+        return {'x': [x_mid_pos, y_mid_pos, None],
+                'y': [x_min_pos + y_rd + 5, y_mid_pos, None],
+                'y1': [x_max_pos - y_rd - 5, y_mid_pos, None]}
+
+    def _init_axes(self, config, sync):
+        valid_axes = ['x', 'y', 'y1']
+        axes = sorted([a.lower() for a in config.getlist('axes')])
+        if any(a not in valid_axes for a in axes):
+            raise config.error(f"motors_sync: Invalid axes '{axes}'")
+        if ('y' in axes) != ('y1' in axes):
+            raise config.error(f"motors_sync: Axes 'y' and 'y1' "
+                               f"can be used only together")
+        sync_pos = self.get_box_cartesian_axes_sync_pos(config)
+        ph_offs = self.stats_helper.get_axes_phase_offsets(axes)
+        self.motion_axes.update(
+            {ax: MotionAxis(config, sync, ax, ['x', 'y'], ph_offs.get(ax),
+                'stepper_' + ax, sync_pos[ax], False) for ax in axes})
+
+    def _init_axes_steppers(self, config):
+        kin_sts = self.toolhead_kin.get_steppers()
+        def get_steppers(sts):
+            _sts = [s for st in sts for s in kin_sts if st == s.get_name()]
+            if len(_sts) != 2:
+                raise config.error(f"motors_sync: Not supported "
+                                   f"'{len(_sts)}' count of motors")
+            return _sts
+        mt = self.motion_axes
+        if 'x' in mt:
+            x0 = get_steppers(('stepper_x','stepper_x1'))
+            mt['x'].add_steppers(x0[0], [x0[1]], [x0[1]], [])
+        if 'y' in self.motion_axes:
+            y0 = get_steppers(('stepper_y','stepper_y1'))
+            y1 = get_steppers(('stepper_y2','stepper_y3'))
+            mt['y'].add_steppers(y0[0], [y0[1]], [y0[1], y1[1]], [y1[0]])
+            mt['y1'].add_steppers(y1[0], [y1[1]], [y1[1], y0[1]], [y0[0]])
+
+    def axes_sync(self, axes):
+        # To skip extra measure_deviation() in axis_sync_step()
+        axes[0].detect_move_dir()
+        for m in axes:
+            while True:
+                if m.is_finished:
+                    if all(m.is_finished for m in axes):
+                        return
+                    break
+                self.axis_sync_step(m)
+
+    def calibrate_axis_steps_model(self, axis, peak_mstep, repeats):
+        return self.axis_calibrate_cycle(axis, peak_mstep, repeats)
+
+    def get_linked_calibration_axes(self, axis):
+        return sorted({a.name for a in self.motion_axes.values()
+                       if a.name.startswith(axis.name[0])})
+
+
 # Parse kinematics from configfile and choosing from supported ones.
 class KinematicsParser:
     @staticmethod
@@ -322,11 +393,20 @@ class KinematicsParser:
         kin_map.update({'limitedcorexy': CoreXYKinematics})
         printer_section = config.getsection('printer')
         conf_kin = printer_section.get('kinematics')
-        kin_helper = kin_map.get("".join(conf_kin.split("_")))
+        if conf_kin in ('cartesian',):
+            kin_helper = KinematicsParser._parse_cartesian_kin(config)
+        else:
+            kin_helper = kin_map.get("".join(conf_kin.split("_")))
         if kin_helper is None:
             raise config.error(f"motors_sync: Not supported "
                                f"'{conf_kin}' kinematics")
         return kin_helper(config, sync)
+
+    @staticmethod
+    def _parse_cartesian_kin(config):
+        if all(config.has_section(s) for s in ('stepper_y2', 'stepper_y3')):
+            return BoxCartesianKinematics
+        return CartesianKinematics
 
 
 # Plug class for the Klipper version before add "motion_queuing"
