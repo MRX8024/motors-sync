@@ -359,15 +359,14 @@ class DummyPrinterMotionQueuing:
         return
 
 
-# MCU_stepper manual enables and manual moves outside normal
-# kinematics, with extra allocated stepper kinematics and trapq.
+# MCU_stepper manual moves outside normal kinematics, with extra
+# allocated stepper kinematics and trapq.
 class StepperManualMove:
     from . import force_move
     calc_move_time = staticmethod(force_move.calc_move_time)
     del force_move
     def __init__(self, config):
         self.printer = printer = config.get_printer()
-        self.stepper_en = printer.load_object(config, 'stepper_enable')
         self.motion_queuing = \
             printer.load_object(config, 'motion_queuing', None)
         if self.motion_queuing is None:
@@ -389,20 +388,6 @@ class StepperManualMove:
         for i in range(count - len(self.stepper_kins)):
             self.stepper_kins.append(ffi_main.gc(
                 ffi_lib.cartesian_stepper_alloc(b'x'), ffi_lib.free))
-
-    def steppers_enable(self, mcu_steppers, mode):
-        ptime = self.toolhead.get_last_move_time()
-        did_change = False
-        for mcu_stepper in mcu_steppers:
-            el = self.stepper_en.lookup_enable(mcu_stepper.get_name())
-            if el.is_motor_enabled() == mode:
-                continue
-            if mode:
-                el.motor_enable(ptime)
-            else:
-                el.motor_disable(ptime)
-            did_change = True
-        return did_change
 
     def _set_new_stepper_kins(self, mcu_steppers):
         prev_stepper_kins = {}
@@ -444,6 +429,47 @@ class StepperManualMove:
         self.motion_queuing.wipe_trapq(self.trapq)
 
 
+# MCU_stepper manual enable through PrinterStepperEnable
+class StepperManualEnable:
+    def __init__(self, config):
+        self.printer = printer = config.get_printer()
+        self.stepper_en = printer.load_object(config, 'stepper_enable')
+        self.enables = {}
+        printer.register_event_handler("klippy:connect",
+                                       self._handle_connect)
+
+    def _handle_connect(self):
+        self.toolhead = self.printer.lookup_object('toolhead')
+
+    def register_steppers(self, mcu_steppers):
+        for mcu_stepper in mcu_steppers:
+            if mcu_stepper not in self.enables:
+                name = mcu_stepper.get_name()
+                enable_line = self.stepper_en.lookup_enable(name)
+                if enable_line.has_dedicated_enable():
+                    enable_cb = lambda cb, ptime: cb(ptime)
+                else:
+                    raise self.printer.config_error(
+                        f"motors_sync: Stepper '{name}' either has "
+                        f"a shared enable pin, uses a TMC virtual "
+                        f"enable, or has no enable pin configured")
+                self.enables[mcu_stepper] = enable_line, enable_cb
+
+    def steppers_enable(self, mcu_steppers, mode):
+        ptime = self.toolhead.get_last_move_time()
+        did_change = False
+        for mcu_stepper in mcu_steppers:
+            enable_line, enable_cb = self.enables[mcu_stepper]
+            if enable_line.is_motor_enabled() == mode:
+                continue
+            if mode:
+                enable_cb(enable_line.motor_enable, ptime)
+            else:
+                enable_cb(enable_line.motor_disable, ptime)
+            did_change = True
+        return did_change
+
+
 # Base helper class for bulk sensors readings that measure the degree
 # of desynchronization of stepper motors in virtual-axes.
 class BaseSensorHelper:
@@ -453,7 +479,6 @@ class BaseSensorHelper:
         self.dim_type = ''
         self.msg_helper = axis.msg_helper
         self.printer = axis.printer
-        self.stepper_move = axis.stepper_move
         self.gcode = self.printer.lookup_object('gcode')
         self.reactor = self.printer.get_reactor()
         self.chip_config = None
@@ -994,6 +1019,7 @@ class MotionAxis:
         self.start_sync_pos = sync_pos
         self.is_multi_axis = is_multi_axis
         self.stepper_move = sync.stepper_move
+        self.stepper_enable = sync.stepper_enable
         self.stats_helper = sync.stats_helper
         self.msg_helper = sync.msg_helper
         self.printer = config.get_printer()
@@ -1168,6 +1194,8 @@ class MotionAxis:
         self_tmcs = list(self._get_tmc_drivers(self_steppers))
         self._validate_steppers(self_steppers, self_tmcs)
         self.stepper_move.note_steppers_count(max(len(steps), len(buzzs)))
+        all_steppers = {enable, *steps, *buzzs, *conflicts}
+        self.stepper_enable.register_steppers(all_steppers)
         self.steppers = {
             'self_steppers': self_steppers,
             'self_tmcs': self_tmcs,
@@ -1288,21 +1316,21 @@ class MotionAxis:
         move_dist1 = move_msteps1 * self.move_d
         move_dist2 = move_msteps2 * self.move_d * -1
         mcu_stepper1, mcu_stepper2 = self.steppers['self_steppers']
-        en1 = self.stepper_move.steppers_enable([mcu_stepper1], 0)
-        en2 = self.stepper_move.steppers_enable([mcu_stepper2], 1)
+        en1 = self.stepper_enable.steppers_enable([mcu_stepper1], 0)
+        en2 = self.stepper_enable.steppers_enable([mcu_stepper2], 1)
         self.toolhead.dwell(MOTOR_STALL_TIME)
         self.stepper_move.manual_move([mcu_stepper2], [move_dist1])
         self.toolhead.dwell(MOTOR_STALL_TIME)
-        self.stepper_move.steppers_enable([mcu_stepper2], 0)
-        self.stepper_move.steppers_enable([mcu_stepper1], 1)
+        self.stepper_enable.steppers_enable([mcu_stepper2], 0)
+        self.stepper_enable.steppers_enable([mcu_stepper1], 1)
         self.toolhead.dwell(MOTOR_STALL_TIME)
         self.stepper_move.manual_move([mcu_stepper1], [move_dist2])
         self.toolhead.dwell(MOTOR_STALL_TIME)
         self.gcode.respond_info(
             f'{self.name_prefixed}-Restore previous '
             f'position: {move_msteps}/{self.microsteps} step')
-        self.stepper_move.steppers_enable([mcu_stepper1], en1)
-        self.stepper_move.steppers_enable([mcu_stepper2], not en2)
+        self.stepper_enable.steppers_enable([mcu_stepper1], en1)
+        self.stepper_enable.steppers_enable([mcu_stepper2], not en2)
         self.toolhead.dwell(MOTOR_STALL_TIME)
         return True
 
@@ -1313,12 +1341,12 @@ class MotionAxis:
             times = (times[0], MOTOR_STALL_TIME)
         mcu_stepper = self.steppers['enable_stepper']
         self.toolhead.dwell(times[0])
-        self.stepper_move.steppers_enable([mcu_stepper], mode)
+        self.stepper_enable.steppers_enable([mcu_stepper], mode)
         self.toolhead.dwell(times[1])
 
     def toggle_self_steppers(self, mode):
         mcu_steppers = self.steppers['self_steppers']
-        ret = self.stepper_move.steppers_enable(mcu_steppers, mode)
+        ret = self.stepper_enable.steppers_enable(mcu_steppers, mode)
         if ret:
             self.toolhead.dwell(MOTOR_STALL_TIME)
 
@@ -1326,7 +1354,7 @@ class MotionAxis:
         mcu_steppers = self.steppers['conflict_steppers']
         if not mcu_steppers:
             return
-        ret = self.stepper_move.steppers_enable(mcu_steppers, mode)
+        ret = self.stepper_enable.steppers_enable(mcu_steppers, mode)
         if ret:
             self.toolhead.dwell(MOTOR_STALL_TIME)
 
@@ -1428,6 +1456,7 @@ class MotorsSync:
         # Init motors-sync helpers
         self.status = ZAdjustStatus(self.printer)
         self.stepper_move = StepperManualMove(config)
+        self.stepper_enable = StepperManualEnable(config)
         self.fan_manager = FanManager(config)
         self.stats_helper = MotionAxesStats(config)
         self.msg_helper = MotionAxisMsgHelper(config)
