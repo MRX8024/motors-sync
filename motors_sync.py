@@ -81,18 +81,36 @@ class BaseKinematics:
         m.step_move()
         m.new_magnitude = m.measure_deviation()
         self.msg_helper.stepped_msg(m)
-        if m.new_magnitude > m.magnitude:
+        # Only count the move as a regression if the magnitude grew by
+        # more than the measured sensor noise. This stops noise from
+        # triggering false reverts, needless retries and oscillation.
+        if m.new_magnitude > m.magnitude + m.magnitude_noise:
             m.step_move(dir=-1)
+            # Still moving in coarse steps: do not abandon this direction,
+            # shrink the step size and converge on the minimum finely
+            # instead of bouncing across it.
+            if m.move_msteps > 1:
+                m.shrink_step()
+                return
+            # At single-microstep resolution a step made it worse, so the
+            # minimum for this direction has been reached.
             if m.retry_tolerance and m.magnitude > m.retry_tolerance:
                 m.curr_retry += 1
                 if m.curr_retry > m.max_retries:
-                    raise Exception('Too many retries')
-                m.set_move_dir(0)
+                    # Best-effort: settle at the lowest measured position
+                    # instead of hard-failing with an exception.
+                    self.msg_helper.best_effort_msg(m)
+                    m.on_finish()
+                    return
+                m.start_retry()
                 self.msg_helper.retry_msg(m)
                 return
             m.on_finish()
             return
-        m.magnitude = m.new_magnitude
+        # Accept the move, keeping the lowest magnitude as the reference
+        # so we never drift upward through the noise band.
+        if m.new_magnitude < m.magnitude:
+            m.magnitude = m.new_magnitude
 
     def axes_sync(self, axes):
         raise self.gcode.error("Not implemented for this kinematics")
@@ -113,6 +131,7 @@ class BaseKinematics:
         # Init axes magnitudes
         for ax in axes:
             ax.on_start()
+            ax.enable_best_restore()
             ax.init_magnitude = ax.magnitude = ax.measure_deviation()
             self.msg_helper.start_msg(ax)
         # Check if all axes in tolerance
@@ -510,8 +529,8 @@ class BaseSensorHelper:
                     self.request_end_time, side='right')
         return raw_data[start_idx:end_idx][:, 1:]
 
-    def measure_deviation(self):
-        # Measure the impact
+    def _measure_once(self):
+        # Perform a single buzz/measure cycle and return its magnitude
         self.axis.buzz_move(25)
         self.flush_data()
         self.axis.toggle_main_stepper(1, (PIN_MIN_TIME,))
@@ -520,8 +539,26 @@ class BaseSensorHelper:
         self.axis.toggle_main_stepper(1)
         self.update_end_time()
         self.axis.buzz_move(5)
-        dev = self.calc_deviation()
+        return self.calc_deviation()
+
+    def measure_deviation(self):
+        # Average several cycles to reject sensor noise. The spread of
+        # the samples is stored on the axis and used as a hysteresis
+        # band so noise cannot trigger false reverts during the sync.
+        count = max(1, self.axis.measurements_count)
+        samples = [self._measure_once() for _ in range(count)]
+        if count == 1:
+            dev = samples[0]
+            self.axis.magnitude_noise = 0.
+        else:
+            arr = np.asarray(samples, dtype=float)
+            med = float(np.median(arr))
+            mad = float(np.median(np.abs(arr - med)))
+            dev = round(med, 2)
+            # 1.4826 * MAD approximates the standard deviation
+            self.axis.magnitude_noise = round(1.4826 * mad, 2)
         self.axis.update_log(dev)
+        self.axis.note_measurement(dev)
         return dev
 
     def calc_deviation(self):
@@ -959,6 +996,14 @@ class MotionAxisMsgHelper:
                f"to reach {ax.retry_tolerance}")
         self.gcode.respond_info(msg)
 
+    def best_effort_msg(self, ax):
+        msg = (f"{ax.name_prefixed}-Tolerance {ax.retry_tolerance} not "
+               f"reached after {ax.max_retries} retries; settling at the "
+               f"best measured {ax.chip_helper.dim_type}: "
+               f"{ax.best_magnitude} on {ax.best_msteps}/"
+               f"{ax.microsteps} step")
+        self.gcode.respond_info(msg)
+
 
 # Virtual-axis as helper to control and synchronize assigned stepper
 # to another stepper on one belt or to the secondary/overall kinematics.
@@ -1012,6 +1057,20 @@ class MotionAxis:
         if not self.max_step_size:
             self.max_step_size = config.getint(
                 'max_step_size', default=3, minval=1, maxval=msmax)
+        # Buzz/measure cycles averaged per magnitude reading. Higher
+        # values reject accelerometer noise for finer, more repeatable
+        # adjustments at the cost of a slower sync (set 1 for old speed).
+        self.measurements_count = config.getint(
+            f'measurements_count_{name}', default=0, minval=1, maxval=15)
+        if not self.measurements_count:
+            self.measurements_count = config.getint(
+                'measurements_count', default=3, minval=1, maxval=15)
+        # Convergence state (also reset in flush_motion_data)
+        self.step_cap = self.max_step_size
+        self.magnitude_noise = 0.
+        self.best_magnitude = float('inf')
+        self.best_msteps = 0
+        self.restore_on_finish = False
         self.axes_steps_diff = config.getint(
             f'axes_steps_diff_{name}', default=0, minval=1)
         if not self.axes_steps_diff:
@@ -1188,6 +1247,11 @@ class MotionAxis:
         self.curr_retry = 0
         self.is_finished = False
         self.motion_log = []
+        self.step_cap = self.max_step_size
+        self.magnitude_noise = 0.
+        self.best_magnitude = float('inf')
+        self.best_msteps = 0
+        self.restore_on_finish = False
 
     def get_physical_axes(self):
         return self.physical_axes
@@ -1203,6 +1267,37 @@ class MotionAxis:
 
     def reset_drift_msteps(self):
         self.drift_msteps = 0
+
+    def enable_best_restore(self):
+        self.restore_on_finish = True
+
+    def note_measurement(self, dev):
+        # Track the lowest magnitude and the microstep position where it
+        # was seen, so the motors can be settled there when finishing.
+        if dev < self.best_magnitude:
+            self.best_magnitude = dev
+            self.best_msteps = self.actual_msteps
+
+    def restore_best_position(self):
+        if self.best_magnitude == float('inf'):
+            return
+        delta = self.best_msteps - self.actual_msteps
+        if not delta:
+            return
+        mcu_stepper = self.steppers['step_stepper']
+        self.actual_msteps += delta
+        self.drift_msteps += delta
+        self.stepper_move.manual_move(mcu_stepper, [self.move_d * delta])
+
+    def shrink_step(self):
+        # Halve the step ceiling to approach the minimum more finely
+        self.step_cap = max(self.step_cap // 2, 1)
+
+    def start_retry(self):
+        # Reset to a coarse search for a fresh direction probe
+        self.set_move_dir(0)
+        self.step_cap = self.max_step_size
+        self.move_msteps = 2
 
     def set_move_dir(self, dir):
         if dir == 1:
@@ -1323,7 +1418,8 @@ class MotionAxis:
     def calc_move_msteps(self, dev=None):
         dev = self.new_magnitude if dev is None else dev
         steps_to_zero = max(int(self.steps_model_solve(dev)), 1)
-        self.move_msteps = min(steps_to_zero, self.max_step_size)
+        self.move_msteps = min(
+            steps_to_zero, self.max_step_size, self.step_cap)
 
     def step_move(self, dir=1):
         mcu_stepper = self.steppers['step_stepper']
@@ -1370,6 +1466,11 @@ class MotionAxis:
         self.chip_helper.start_measurements()
 
     def on_finish(self):
+        if self.restore_on_finish:
+            # Settle at the lowest magnitude position measured this run
+            self.restore_best_position()
+            if self.best_magnitude < self.magnitude:
+                self.magnitude = self.best_magnitude
         self.is_finished = True
         self.fan.toggle(True)
         self.chip_helper.finish_measurements()
