@@ -3,7 +3,7 @@
 # Copyright (C) 2024-2026  Maksim Bolgov <maksim8024@gmail.com>
 #
 # This file may be distributed under the terms of the GNU GPLv3 license.
-import os, logging, traceback, itertools, csv, ast, importlib.util
+import os, logging, itertools, csv, ast, importlib.util
 import threading, multiprocessing
 from datetime import datetime
 import numpy as np
@@ -87,7 +87,7 @@ class BaseKinematics:
             if m.retry_tolerance and m.magnitude > m.retry_tolerance:
                 m.curr_retry += 1
                 if m.curr_retry > m.max_retries:
-                    raise Exception('Too many retries')
+                    raise self.gcode.error('Too many retries')
                 m.set_move_dir(0)
                 self.msg_helper.retry_msg(m)
                 return
@@ -120,16 +120,16 @@ class BaseKinematics:
             for axis in axes:
                 axis.on_done()
                 self.msg_helper.done_msg(axis)
-        except Exception as e:
+        except self.gcode.error:
             try:
                 for axis in axes:
                     axis.on_error()
                     self.msg_helper.done_msg(axis)
-            except:
-                raise Exception("Internal error in motors_sync")
-            logging.error(f"Internal error in motors_sync:\n "
-                          f"{traceback.format_exc()}")
-            raise self.gcode.error(str(e))
+            except Exception:
+                msg = "Internal error in motors_sync"
+                logging.exception(msg)
+                self.printer.invoke_shutdown(msg)
+            raise
 
     def axis_calibrate_cycle(self, m, peak_mstep, repeats):
         # "m" is a main single MotionAxis
@@ -137,28 +137,37 @@ class BaseKinematics:
         invs = [1, -1, -1, 1]
         samples = [-1,]
         looped_pos = itertools.cycle([m.rd, -m.rd, -m.rd, m.rd])
-        m.on_start()
-        m.move_on_measure_pos()
-        # Scale calibration steps to 1/16
-        m.move_msteps = m.microsteps // 16
-        m.toggle_main_stepper(0)
-        for r in range(1, repeats + 1):
-            self.gcode.respond_info(f'Repeats: {r}/{repeats}')
-            m.manual_move(next(looped_pos))
-            for inv in invs:
-                m.set_move_dir(inv)
-                for _ in range(peak_mstep):
-                    m.step_move()
-                    m.new_magnitude = m.measure_deviation()
-                    self.msg_helper.stepped_msg(m)
-                    if m.new_magnitude > max(samples):
-                        max_steps += 1
-                    samples.append(m.new_magnitude)
-        if repeats % 2 == 1:
-            m.manual_move(next(looped_pos))
-        m.magnitude = m.new_magnitude
-        m.on_done()
-        return max_steps, samples[1:]
+        try:
+            m.on_start()
+            m.move_on_measure_pos()
+            # Scale calibration steps to 1/16
+            m.move_msteps = m.microsteps // 16
+            m.toggle_main_stepper(0)
+            for r in range(1, repeats + 1):
+                self.gcode.respond_info(f'Repeats: {r}/{repeats}')
+                m.manual_move(next(looped_pos))
+                for inv in invs:
+                    m.set_move_dir(inv)
+                    for _ in range(peak_mstep):
+                        m.step_move()
+                        m.new_magnitude = m.measure_deviation()
+                        self.msg_helper.stepped_msg(m)
+                        if m.new_magnitude > max(samples):
+                            max_steps += 1
+                        samples.append(m.new_magnitude)
+            if repeats % 2 == 1:
+                m.manual_move(next(looped_pos))
+            m.magnitude = m.new_magnitude
+            m.on_done()
+            return max_steps, samples[1:]
+        except self.gcode.error:
+            try:
+                m.on_error(write_stats=False)
+            except Exception:
+                msg = "Internal error in motors_sync"
+                logging.exception(msg)
+                self.printer.invoke_shutdown(msg)
+            raise
 
     def calibrate_axis_steps_model(self, axis, peak_mstep, repeats):
         raise self.gcode.error("Not implemented for this kinematics")
@@ -537,7 +546,8 @@ class BaseSensorHelper:
                 if last_mcu_time >= self.request_end_time:
                     return True
             if now > wait_limit:
-                raise Exception(f"No data from '{self.chip_name}'")
+                raise self.gcode.error(
+                    f"No data from '{self.chip_name}' sensor")
 
     def _get_samples(self):
         self._wait_samples()
@@ -625,6 +635,9 @@ class AccelHelper(BaseSensorHelper):
 
     def _init_chip_config(self):
         self.chip_config = self.printer.lookup_object(self.chip_name)
+        if not hasattr(self.chip_config, 'start_internal_client'):
+            msg = f"'{self.chip_name}' is not an accelerometer"
+            raise self.printer.config_error(msg)
         if self.chip_config.data_rate > self.ACCEL_FILTER_THRESHOLD:
             self.chip_filter = self._get_chip_filter()
         else:
@@ -685,6 +698,9 @@ class BeaconAccelHelper(AccelHelper):
             def __getattr__(self, name):
                 return getattr(self.accel_helper, name)
         beacon = self.printer.lookup_object(self.chip_name)
+        if not hasattr(beacon, 'start_internal_client'):
+            msg = f"'{self.chip_name}' is not an accelerometer"
+            raise self.printer.config_error(msg)
         if beacon.accel_helper is None:
             msg = "This Beacon has no accelerometer"
             raise self.printer.config_error(msg)
@@ -719,6 +735,9 @@ class EncoderHelper(BaseSensorHelper):
 
     def _init_chip_config(self):
         self.chip_config = self.printer.lookup_object(self.chip_name)
+        if not hasattr(self.chip_config, 'bulk_queue'):
+            msg = f"'{self.chip_name}' is not an encoder"
+            raise self.printer.config_error(msg)
         self._check_sample_rate()
         self._check_encoder_place()
 
@@ -1121,7 +1140,7 @@ class MotionAxis:
         def model_solve(fx):
             res = model_config['f'](fx, model_coeffs)
             if np.isnan(res):
-                raise Exception(
+                raise self.gcode.error(
                     f"Microsteps calculation returned NaN "
                     f"for {self.name_prefixed} axis")
             return res * model_scale
@@ -1432,12 +1451,13 @@ class MotionAxis:
         self.phase_offset = self.query_phases_offset()
         self.stats_helper.write_axis_stats_log(self, True)
 
-    def on_error(self):
+    def on_error(self, write_stats=True):
         self.fan.toggle(True)
         self.chip_helper.finish_measurements()
         self.toggle_self_steppers(1)
         self.toggle_conflict_steppers(1)
-        self.stats_helper.write_axis_stats_log(self, False)
+        if write_stats:
+            self.stats_helper.write_axis_stats_log(self, False)
 
 
 # Main entry point for motors synchronization feature. Initializes
@@ -1487,7 +1507,7 @@ class MotorsSync:
                 if ax_chip and ax_chip != axis.chip_helper.get_name():
                     try:
                         axis.init_accel_chip_helper(ax_chip)
-                    except Exception as e:
+                    except self.printer.config_error as e:
                         raise self.gcode.error(str(e))
             retry_tol = gcmd.get_float(f'RETRY_TOLERANCE_{axis_name}',
                                        default=None, above=0.)
