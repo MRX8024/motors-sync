@@ -26,13 +26,14 @@ class BaseKinematics:
         self.printer = config.get_printer()
         self.gcode = self.printer.lookup_object('gcode')
         self.motion_axes = {}
+        self.printer.register_event_handler(
+            "klippy:connect", lambda: self._handle_connect(config))
         self._init_axes(config, sync)
-        sync.add_connect_task(self._handle_connect)
-        sync.add_connect_task(lambda: self._init_axes_steppers(config))
 
-    def _handle_connect(self):
+    def _handle_connect(self, config):
         self.toolhead = self.printer.lookup_object('toolhead')
         self.toolhead_kin = self.toolhead.get_kinematics()
+        self._init_axes_steppers(config)
 
     def _init_axes(self, config, sync):
         raise NotImplementedError("Internal error in motors_sync")
@@ -97,41 +98,33 @@ class BaseKinematics:
     def axes_sync(self, axes):
         raise self.gcode.error("Not implemented for this kinematics")
 
-    def end_sync(self, axes):
-        for axis in axes:
-            axis.on_done()
-            self.msg_helper.done_msg(axis)
-
-    def on_sync_error(self, axes):
-        for axis in axes:
-            axis.on_error()
-            self.msg_helper.done_msg(axis)
-
-    def run_sync(self, axes, force_run=False):
-        self.home_rails(axes)
-        self.apply_axes_phase_offsets(axes)
-        # Init axes magnitudes
-        for ax in axes:
-            ax.on_start()
-            ax.init_magnitude = ax.new_magnitude = \
-                ax.magnitude = ax.measure_deviation()
-            self.msg_helper.start_msg(ax)
-        # Check if all axes in tolerance
-        if not force_run and self.is_axes_in_tolerance(axes):
-            self.end_sync(axes)
-            self.msg_helper.in_tolerance_msg(axes)
-            return
-        self.axes_sync(axes)
-        self.end_sync(axes)
-
     def start_sync(self, axes=None, force_run=False):
         if axes is None:
             axes = list(self.motion_axes.values())
+        self.home_rails(axes)
+        self.apply_axes_phase_offsets(axes)
         try:
-            self.run_sync(axes, force_run)
+            # Init axes magnitudes
+            for ax in axes:
+                ax.on_start()
+                ax.init_magnitude = ax.new_magnitude = \
+                    ax.magnitude = ax.measure_deviation()
+                self.msg_helper.start_msg(ax)
+            # Check if all axes in tolerance
+            if not force_run and self.is_axes_in_tolerance(axes):
+                for axis in axes:
+                    axis.on_done()
+                self.msg_helper.in_tolerance_msg(axes)
+                return
+            self.axes_sync(axes)
+            for axis in axes:
+                axis.on_done()
+                self.msg_helper.done_msg(axis)
         except Exception as e:
             try:
-                self.on_sync_error(axes)
+                for axis in axes:
+                    axis.on_error()
+                    self.msg_helper.done_msg(axis)
             except:
                 raise Exception("Internal error in motors_sync")
             logging.error(f"Internal error in motors_sync:\n "
@@ -686,6 +679,8 @@ class BeaconAccelHelper(AccelHelper):
                 self.accel_helper = beacon.accel_helper
                 # Beacon use "batch_bulk" named as "_api_dump"
                 self.batch_bulk = beacon.accel_helper._api_dump
+                # Beacon doesn't have "data_rate" attribute
+                self.data_rate = 3200
                 self.mcu = beacon._mcu
             def __getattr__(self, name):
                 return getattr(self.accel_helper, name)
@@ -694,9 +689,10 @@ class BeaconAccelHelper(AccelHelper):
             msg = "This Beacon has no accelerometer"
             raise self.printer.config_error(msg)
         self.chip_config = BeaconAccelConfigAdapter(beacon)
-        # Beacon module doesn't have "data_rate" attribute
-        # Beacon adxl345 sampling rate > ACCEL_FILTER_THRESHOLD
-        self.chip_filter = self._get_chip_filter()
+        if self.chip_config.data_rate > self.ACCEL_FILTER_THRESHOLD:
+            self.chip_filter = self._get_chip_filter()
+        else:
+            self.chip_filter = lambda data: data
 
     def _init_chip_config(self):
         # Move to the end of the klippy:connect queue due beacon
@@ -1024,7 +1020,6 @@ class MotionAxis:
         self.msg_helper = sync.msg_helper
         self.printer = config.get_printer()
         self.gcode = self.printer.lookup_object('gcode')
-        sync.add_connect_task(self._handle_connect)
         self.move_dir = []
         self.set_move_dir(0)
         self.move_msteps = 1
@@ -1053,7 +1048,8 @@ class MotionAxis:
         conf_fans = config.getlist(f'head_fan_{name}', '')
         if not conf_fans:
             conf_fans = config.getlist('head_fan', [])
-        sync.add_connect_task(lambda: self._init_fan(sync, conf_fans))
+        self.fan = lambda: (
+            sync.fan_manager.register_fans(self.name, conf_fans))
         msmax = self.microsteps / 2
         self.max_step_size = config.getint(
             f'max_step_size_{name}', default=0, minval=1, maxval=msmax)
@@ -1078,11 +1074,14 @@ class MotionAxis:
         self.name_prefixed = name.upper()
         if name_prefix := config.get(f'axis_prefix_{name}', None):
             self.name_prefixed = f'{name_prefix} {self.name_prefixed}'
+        self.printer.register_event_handler("klippy:connect",
+                                            self._handle_connect)
         self._init_chip_helper(config)
 
     def _handle_connect(self):
         self.toolhead = self.printer.lookup_object('toolhead')
         self.travel_speed = self.toolhead.max_velocity / 2
+        self.fan = self.fan()
 
     def _init_steps_model(self, config, def_model):
         def poly(fx, cf):
@@ -1161,9 +1160,6 @@ class MotionAxis:
             self.chip_helper = EncoderHelper(self, enc_chip_name)
             def_steps_model = ['enc_auto', self.move_d]
         self._init_steps_model(config, def_steps_model)
-
-    def _init_fan(self, sync, fans):
-        self.fan = sync.fan_manager.register_fans(self.name, fans)
 
     def _get_tmc_drivers(self, mcu_steppers):
         for mcu_stepper in mcu_steppers:
@@ -1450,9 +1446,7 @@ class MotorsSync:
     def __init__(self, config):
         self.printer = printer = config.get_printer()
         self.gcode = self.printer.lookup_object('gcode')
-        self.connect_tasks = []
         self.calibrate_steps_model_helper = None
-        printer.register_event_handler("klippy:connect", self._handle_connect)
         # Init motors-sync helpers
         self.status = ZAdjustStatus(self.printer)
         self.stepper_move = StepperManualMove(config)
@@ -1467,13 +1461,6 @@ class MotorsSync:
         self.gcode.register_command('SYNC_MOTORS_CALIBRATE',
                                     self.cmd_SYNC_MOTORS_CALIBRATE,
                                     desc=self.cmd_SYNC_MOTORS_CALIBRATE_help)
-
-    def add_connect_task(self, task):
-        self.connect_tasks.append(task)
-
-    def _handle_connect(self):
-        for task in self.connect_tasks: task()
-        self.connect_tasks.clear()
 
     cmd_SYNC_MOTORS_help = 'Start motors synchronization'
     def cmd_SYNC_MOTORS(self, gcmd):
