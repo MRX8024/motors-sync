@@ -228,7 +228,7 @@ class CartesianKinematics(BaseKinematics):
         return self.axis_calibrate_cycle(axis, peak_mstep, repeats)
 
     def get_linked_calibration_axes(self, axis):
-        return sorted({axis.name for axis in self.motion_axes.values()})
+        return [axis.name]
 
 
 # AWD corexy kinematics implementation
