@@ -1877,6 +1877,11 @@ class MotionAxesStats:
             msg = f"motors_sync: Unable to init statistics log file: {e}"
             logging.exception(msg)
             raise config.error(msg)
+        # Redirect log file helper calls to a separate thread if possible
+        aio = self.printer.load_object(config, 'aio_executor', None)
+        if aio is not None:
+            executor = aio.allocate_executor("motors_sync_io")
+            self.log_helper = executor.wrap_obj(self.log_helper)
 
     def _find_axes_phase_offsets(self, axes):
         try:
