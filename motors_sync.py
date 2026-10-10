@@ -1803,22 +1803,21 @@ class LogFileHelper:
         # Variables
         self.home_dir = os.path.dirname(os.path.realpath(__file__))
         self.log_path = os.path.join(self.home_dir, file_name)
-        self.error = ''
         # Checks
         self.check_log()
 
     def check_log(self):
         if os.path.exists(self.log_path):
-            header, raw_log = self.read_log(True)
+            try:
+                header, raw_log = self.read_log(True)
+            except Exception:
+                header, raw_log = [], None
             if ','.join(header) != self.format:
                 self.clear_log()
             elif raw_log.shape[0] > self.max_size:
                 self.trim_log(header, raw_log, self.max_size)
         else:
-            try:
-                self.write_log(self.format.split(','))
-            except Exception as e:
-                self.error = str(e)
+            self.write_log(self.format.split(','))
 
     def read_log(self, with_header=False):
         with open(self.log_path, mode='r', newline='') as f:
@@ -1840,8 +1839,8 @@ class LogFileHelper:
             writer.writerows(last_rows)
 
     def clear_log(self):
-        os.remove(self.log_path)
-        self.error = ''
+        if os.path.exists(self.log_path):
+            os.remove(self.log_path)
         self.check_log()
 
     def parse_raw_log(self, log):
@@ -1865,17 +1864,28 @@ class LogFileHelper:
 # general synchronizations statistics to user by G-code command.
 class MotionAxesStats:
     def __init__(self, config):
-        self.gcode = config.get_printer().lookup_object('gcode')
+        self.printer = config.get_printer()
+        self.gcode = self.printer.lookup_object('gcode')
         # Register commands
         self.gcode.register_command('SYNC_MOTORS_STATS', self.cmd_GET_STATS,
                                     desc=self.cmd_GET_STATS_help)
         # Variables
         file_name = 'sync_stats.csv'
         format = 'axis,status,magnitudes,steps,msteps,retries,offset,date,'
-        self.log_helper = LogFileHelper(file_name, format)
+        try:
+            self.log_helper = LogFileHelper(file_name, format)
+        except Exception as e:
+            msg = f"motors_sync: Unable to init statistics log file: {e}"
+            logging.exception(msg)
+            raise config.error(msg)
 
     def _find_axes_phase_offsets(self, axes):
-        raw_log = self.log_helper.read_log()
+        try:
+            raw_log = self.log_helper.read_log()
+        except Exception as e:
+            msg = f"motors_sync: Unable to read statistics log file: {e}"
+            logging.exception(msg)
+            raise self.printer.config_error(msg)
         if raw_log.size == 0:
             return {}
         log = self.log_helper.parse_raw_log(raw_log)
@@ -1896,8 +1906,6 @@ class MotionAxesStats:
         return offsets
 
     def write_axis_stats_log(self, axis, state):
-        if self.log_helper.error:
-            return
         if not axis.actual_msteps or len(axis.motion_log) < 2:
             return
         name = axis.name
@@ -1907,8 +1915,13 @@ class MotionAxesStats:
         offset = axis.query_phases_offset()
         offset = "None" if offset is None else offset
         date = datetime.now().strftime('%Y-%m-%d')
-        self.log_helper.write_log([name, state, magnitudes, pos,
-                                   msteps, retries, offset, date])
+        try:
+            self.log_helper.write_log([name, state, magnitudes, pos,
+                                       msteps, retries, offset, date])
+        except Exception as e:
+            msg = f"Unable to write statistics log file: {e}"
+            logging.exception(msg)
+            self.gcode.respond_raw(f"!! {msg}")
 
     def respond_stats(self, log):
         a = {}
@@ -1952,14 +1965,20 @@ class MotionAxesStats:
     def cmd_GET_STATS(self, gcmd):
         do_clear = gcmd.get('CLEAR', '').lower()
         if do_clear in ['true', '1']:
-            self.log_helper.clear_log()
+            try:
+                self.log_helper.clear_log()
+            except Exception as e:
+                msg = f"Unable to clear statistics log file: {e}"
+                logging.exception(msg)
+                raise gcmd.error(msg)
             self.gcode.respond_info('Statistics was cleared')
             return
-        if self.log_helper.error:
-            self.gcode.respond_info(f'Statistics collection is disabled '
-                                    f'due:\n{self.log_helper.error}')
-            return
-        raw_log = self.log_helper.read_log()
+        try:
+            raw_log = self.log_helper.read_log()
+        except Exception as e:
+            msg = f"Unable to read statistics log file: {e}"
+            logging.exception(msg)
+            raise gcmd.error(msg)
         if raw_log.size == 0:
             self.gcode.respond_info('Logs are empty')
             return
