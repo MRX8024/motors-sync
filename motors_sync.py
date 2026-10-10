@@ -1557,8 +1557,7 @@ class MotorsSyncCalibrate:
 
     def _check_modules(self):
         result = []
-        required_mods = ['textwrap', 'matplotlib.pyplot',
-                         'matplotlib.ticker', 'scipy.optimize']
+        required_mods = ['textwrap', 'matplotlib', 'scipy']
         def find_mods():
             nonlocal result
             try:
