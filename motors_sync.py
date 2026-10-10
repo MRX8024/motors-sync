@@ -1106,7 +1106,7 @@ class MotionAxis:
         def poly(fx, cf):
             return max(np.roots([*cf[:-1], cf[-1] - fx]).real)
         math_models = {
-            "linear": {"count": 2, "a_forbidden": None,
+            "linear": {"count": 2, "a_forbidden": 0,
                 "f": lambda fx, c: poly(fx, c)},
             "quadratic": {"count": 3, "a_forbidden": None,
                 "f": lambda fx, c: poly(fx, c)},
@@ -1418,8 +1418,8 @@ class MotionAxis:
     def buzz_move(self, rel_moves=25):
         # Fading oscillations by <buzz_steppers> steppers
         mcu_steppers = self.steppers['buzz_steppers']
-        moves = self.buzz_moves.get(
-            rel_moves, self._gen_buzz_moves(rel_moves))
+        moves = (self.buzz_moves.get(rel_moves, None)
+                 or self._gen_buzz_moves(rel_moves))
         self.toggle_main_stepper(0, (PIN_MIN_TIME,)*2)
         self.stepper_move.manual_move(mcu_steppers, moves)
 
@@ -1693,6 +1693,10 @@ class MotorsSyncCalibrate:
         axis = self.kin_helper.motion_axes.get(axis_name)
         if axis is None:
             raise self.gcode.error(f'Invalid axis: {axis_name.upper()}')
+        if axis.microsteps < 16:
+            raise self.gcode.error(
+                f"Calibration requires at least 16 microsteps resolution, "
+                f"but config parameter 'microsteps' is {axis.microsteps}")
         peak_mstep = gcmd.get_int('DISTANCE', 16, minval=2, maxval=16 * 2)
         repeats = gcmd.get_int('REPEATS', 2, minval=2, maxval=100)
         need_plot = False
@@ -1732,7 +1736,6 @@ class MotorsSyncCalibrate:
                 c_conn.send((True, (e,)))
             finally:
                 c_conn.close()
-        self.gcode.respond_info('Data processing...')
         p_conn, c_conn = multiprocessing.Pipe()
         proc = multiprocessing.Process(target=samples_processing)
         proc.daemon = True
@@ -1895,7 +1898,7 @@ class MotionAxesStats:
     def write_axis_stats_log(self, axis, state):
         if self.log_helper.error:
             return
-        if not axis.actual_msteps:
+        if not axis.actual_msteps or len(axis.motion_log) < 2:
             return
         name = axis.name
         magnitudes, pos = zip(*axis.motion_log)
