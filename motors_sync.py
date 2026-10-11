@@ -1356,13 +1356,25 @@ class MotionAxis:
                                   self.steppers['self_tmcs']))
         return ((p2 - p1 + 512) % 1024) - 512
 
+    def _get_cold_phases_tolerance(self):
+        # After a driver reset, MSCNT may settle on either side of the
+        # zero phase position, half a driver microstep away from it. So
+        # on a cold start the motors may differ by one driver microstep.
+        return max(1 << tmc.fields.get_field("mres")
+                   for tmc in self.steppers['self_tmcs'])
+
     def apply_phase_offset(self):
         if self.phase_offset is None or self.is_multi_axis:
             return False
-        if self.query_phases_offset() != 0:
+        curr_offset = self.query_phases_offset()
+        if abs(curr_offset) > self._get_cold_phases_tolerance():
             # Phases offset has already been changed by anyone
+            self.gcode.respond_info(
+                f'{self.name_prefixed}-Skip restore, motors phases '
+                f'offset has already been changed: {curr_offset}')
             return False
-        move_msteps = self.phase_offset * self.microsteps // 256
+        move_msteps = round((self.phase_offset - curr_offset)
+                            * self.microsteps / 256)
         if abs(move_msteps) < 2:
             return False
         move_msteps1 = move_msteps // 2
