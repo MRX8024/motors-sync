@@ -435,8 +435,12 @@ class StepperManualMove:
 class StepperManualEnable:
     def __init__(self, config):
         self.printer = printer = config.get_printer()
+        self.reactor = self.printer.get_reactor()
+        self.mcu = self.printer.lookup_object('mcu')
         self.stepper_en = printer.load_object(config, 'stepper_enable')
         self.enables = {}
+        self.virtual_en_pending = []
+        self.virtual_en_late = None
         printer.register_event_handler("klippy:connect",
                                        self._handle_connect)
 
@@ -450,14 +454,46 @@ class StepperManualEnable:
                 enable_line = self.stepper_en.lookup_enable(name)
                 if enable_line.has_dedicated_enable():
                     enable_cb = lambda cb, ptime: cb(ptime)
+                elif enable_line.enable.mcu_enable is None:
+                    enable_cb = lambda cb, ptime: (
+                        self.virtual_en_pending.append(cb))
                 else:
                     raise self.printer.config_error(
-                        f"motors_sync: Stepper '{name}' either has "
-                        f"a shared enable pin, uses a TMC virtual "
-                        f"enable, or has no enable pin configured")
+                        f"motors_sync: Stepper '{name}' has a shared "
+                        f"enable pin with another stepper")
                 self.enables[mcu_stepper] = enable_line, enable_cb
 
+    def schedule_virtual_enable(self, ptime):
+        now = self.reactor.monotonic()
+        mcu_ptime = self.mcu.estimated_print_time(now)
+        # Wakeup a bit earlier to avoid busy reactor and tmc bus delay
+        enable_time = now + ptime - mcu_ptime - 0.025
+        def pending_cb(eventtime):
+            reactor_late = self.reactor.monotonic() - enable_time
+            if reactor_late > 0.05:
+                # Will raise error on next steppers_enable()
+                self.virtual_en_late = reactor_late
+            try:
+                while self.virtual_en_pending:
+                    enable_cb = self.virtual_en_pending.pop(0)
+                    enable_cb(ptime)
+            except self.printer.command_error as e:
+                self.printer.invoke_shutdown(str(e))
+        self.reactor.register_callback(pending_cb, enable_time)
+
     def steppers_enable(self, mcu_steppers, mode):
+        if self.virtual_en_pending:
+            wait_limit = self.reactor.monotonic() + 1.
+            while self.virtual_en_pending:
+                now = self.reactor.monotonic()
+                if now > wait_limit:
+                    raise Exception("Internal error in motors_sync")
+                self.reactor.pause(now + 0.010)
+        if self.virtual_en_late is not None:
+            late = self.virtual_en_late
+            self.virtual_en_late = None
+            raise self.printer.command_error(
+                f"Stepper TMC virtual enable was late on {late:.4f}s")
         ptime = self.toolhead.get_last_move_time()
         did_change = False
         for mcu_stepper in mcu_steppers:
@@ -469,6 +505,8 @@ class StepperManualEnable:
             else:
                 enable_cb(enable_line.motor_disable, ptime)
             did_change = True
+        if self.virtual_en_pending:
+            self.schedule_virtual_enable(ptime)
         return did_change
 
 
