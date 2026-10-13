@@ -321,6 +321,7 @@ class KinematicsParser:
     def get_kinematics(config, sync):
         kin_map = {cls.__name__.replace('Kinematics', '').lower(): cls
                    for cls in BaseKinematics.__subclasses__()}
+        kin_map.update({'limitedcartesian': CartesianKinematics})
         kin_map.update({'limitedcorexy': CoreXYKinematics})
         printer_section = config.getsection('printer')
         conf_kin = printer_section.get('kinematics')
