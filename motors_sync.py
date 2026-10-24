@@ -53,7 +53,7 @@ class BaseKinematics:
             self.gcode.run_script_from_command(command)
 
     def apply_axes_phase_offsets(self, axes):
-        # Try restore last sync position on cold start
+        # Try restore last sync position
         self.toolhead.wait_moves()
         applied = False
         for axis in axes:
@@ -1359,10 +1359,9 @@ class MotionAxis:
     def apply_phase_offset(self):
         if self.phase_offset is None or self.is_multi_axis:
             return False
-        if self.query_phases_offset() != 0:
-            # Phases offset has already been changed by anyone
-            return False
-        move_msteps = self.phase_offset * self.microsteps // 256
+        phase_diff = self.phase_offset - self.query_phases_offset()
+        need_phase_offset = ((phase_diff + 512) % 1024) - 512
+        move_msteps = need_phase_offset * self.microsteps // 256
         if abs(move_msteps) < 2:
             return False
         move_msteps1 = move_msteps // 2

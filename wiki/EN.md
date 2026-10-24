@@ -246,11 +246,11 @@ it has already been performed in the current session:
 
 ## Statistics and synchronization restoration
 Each synchronization iteration is written to a log located in the project
-directory. The presence of this log allows, at the first launch of motors
-synchronization after turning on the printer, restoring motors positions based
-on the last successful synchronization. This often significantly brings the
-motors closer to the synchronization point, which reduces the number of
-measurements required and speeds up the synchronization process.
+directory. The presence of this log allows, at the launch of the
+synchronization process, restoring motors positions based on the last
+successful synchronization. This often significantly brings the motors closer
+to the synchronization point, which reduces the number of measurements required
+and speeds up the synchronization process.
 
 Restoration can be performed manually using the command:
 ```
